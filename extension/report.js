@@ -4,7 +4,7 @@
    signal with its detection ID and weight, both world snapshots side by side,
    the raw probe output, and the header order the browser actually sent. */
 
-import { LAYERS } from "./scorer.js";
+import { LAYERS, LAYER_INFO } from "./scorer.js";
 
 /* The two layers only the harness can measure sit ahead of the local ones,
    because a production stack meets a client in this order. */
@@ -83,6 +83,10 @@ function drawLadder(local, server) {
     const label = document.createElement("div");
     label.textContent = name;
     label.className = "n";
+    if (LAYER_INFO[name]) {
+      label.setAttribute("data-tip", LAYER_INFO[name]);
+      label.setAttribute("tabindex", "0");
+    }
 
     const axis = document.createElement("div");
     axis.className = "axis";

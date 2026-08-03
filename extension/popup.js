@@ -1,6 +1,6 @@
 /* Draw the last result for the active tab and hold the harness settings. */
 
-import { LAYERS } from "./scorer.js";
+import { LAYERS, LAYER_INFO } from "./scorer.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,6 +34,14 @@ function drawLadder(layers, earliest) {
         weight >= 0 ? "var(--bot)" : "var(--human)"};left:${
         weight >= 0 ? 50 : 50 - pct}%;width:${pct}%"></div></div>` +
       `<div class="v">${weight > 0 ? "+" : ""}${weight.toFixed(1)}</div>`;
+
+    /* Set the description as a property rather than in the markup above, so
+       the text never has to be escaped. */
+    const label = row.querySelector(".n");
+    if (LAYER_INFO[name]) {
+      label.setAttribute("data-tip", LAYER_INFO[name]);
+      label.setAttribute("tabindex", "0");
+    }
     host.appendChild(row);
   });
 }

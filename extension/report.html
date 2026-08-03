@@ -47,10 +47,18 @@
 
   .ladder { border-top:1px solid var(--rule); }
   .row { display:grid; grid-template-columns:120px 1fr 66px 120px; align-items:center; gap:14px;
-         border-bottom:1px solid var(--rule); padding:9px 0; }
+         border-bottom:1px solid var(--rule); padding:9px 0; position:relative; }
   .row .n { font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; }
   .row .n.hit::before { content:"\25B8 "; color:var(--bot); }
   .row .n.off { color:var(--mute); }
+  /* Hover or focus a layer name to read what that layer measures. */
+  .row .n[data-tip] { cursor:help; text-decoration:underline dotted var(--mute);
+                      text-underline-offset:4px; }
+  .row .n[data-tip]:hover::after, .row .n[data-tip]:focus-visible::after {
+    content:attr(data-tip); position:absolute; left:0; top:calc(100% - 4px);
+    max-width:540px; z-index:20; background:var(--ink); color:var(--paper);
+    font-family:var(--sans); font-size:13px; letter-spacing:0; text-transform:none;
+    line-height:1.5; padding:10px 13px; box-shadow:0 3px 12px rgba(0,0,0,.24); }
   .axis { position:relative; height:16px; background:var(--panel); }
   .axis .z { position:absolute; left:50%; top:0; bottom:0; width:1px; background:var(--rule); }
   .axis .b { position:absolute; top:3px; height:10px; }

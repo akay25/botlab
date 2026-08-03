@@ -10,6 +10,42 @@
 export const LAYERS = ["http", "browser", "worlds", "runtime", "environment",
   "behavior", "consistency"];
 
+/* Plain-language descriptions, shown when the reader hovers a layer name in
+   the popup or the report. The two harness-only layers are here too, because
+   the report lists them even when nothing measured them. */
+export const LAYER_INFO = {
+  network:
+    "Where the request came from. A datacentre address is a weaker sign than a " +
+    "home connection. Only the harness can read this.",
+  tls:
+    "The handshake your browser performs before it says a word. Every browser " +
+    "has a distinctive one, and copying headers does not change it. Only the " +
+    "harness can read this.",
+  http:
+    "The headers your browser sent, and the order it sent them in. Real Chrome " +
+    "uses a fixed order that most tools get wrong.",
+  browser:
+    "What a website can see: window size, graphics card, fonts, plugins, canvas. " +
+    "Automated browsers leave gaps here.",
+  worlds:
+    "The same questions asked twice, once the way a website would ask and once " +
+    "through a channel a bot cannot reach. Different answers mean something is " +
+    "wearing a disguise.",
+  runtime:
+    "How the JavaScript engine behaves, rather than what it claims. Catches a " +
+    "debugger attached to the page and patches that rewrote the browser's own " +
+    "functions.",
+  environment:
+    "What the machine actually has: camera, microphone, system voices, video " +
+    "codecs, a working network. A disguise cannot install hardware.",
+  behavior:
+    "Mouse path, typing rhythm, and whether events came from a hand or a script. " +
+    "Straight lines and perfectly even timing are not human.",
+  consistency:
+    "Every claim checked against every other. A client can pass one layer; it " +
+    "struggles when two layers tell different stories about the same machine."
+};
+
 const SOFTWARE_RENDERERS = [
   "swiftshader", "llvmpipe", "software rasterizer", "mesa offscreen",
   "virgl", "microsoft basic render"
