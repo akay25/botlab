@@ -11,6 +11,7 @@ layer caught a client, which is the measurement a thesis needs.
 import math
 import statistics
 
+import behavior
 import reference
 
 # The order is the order a production stack meets the client. `first_catching
@@ -255,13 +256,22 @@ def _path_straightness(points):
     return direct / traveled
 
 
-def score_behavior(session):
-    """Check the movement and timing that the collector recorded."""
+def score_behavior(session, metrics=None):
+    """Check the movement and timing that the client recorded.
+
+    Two telemetry shapes arrive here. The task page sends raw events, which
+    `behavior.py` analyses in depth. The extension sends a smaller summary,
+    which the legacy path below reads. Both land in the same layer.
+    """
     out = []
     beh = session.get("behavior")
     if beh is None:
         return [Signal("behavior", "behavior.no_telemetry", 0.6,
                        "The session reported no interaction data.")]
+
+    if beh.get("version") == 2 or "pointer" in beh:
+        return [Signal("behavior", f["id"], f["weight"], f["detail"])
+                for f in behavior.findings(beh, metrics)]
 
     moves = beh.get("mouse", [])
     clicks = beh.get("clicks", 0)
@@ -572,6 +582,11 @@ def evaluate(session, calibration=None):
     if calibration is None:
         calibration = reference.load_calibration()
 
+    # Derive the behavioural metrics once. They feed the score and they also
+    # travel with the result, so a report can show the numbers behind each
+    # finding and a reader can check them.
+    metrics = behavior.analyse(session.get("behavior"))
+
     signals = []
     signals += score_network(session)
     signals += score_tls(session, calibration)
@@ -580,7 +595,7 @@ def evaluate(session, calibration=None):
     signals += score_worlds(session)
     signals += score_runtime(session)
     signals += score_environment(session)
-    signals += score_behavior(session)
+    signals += score_behavior(session, metrics)
     signals += score_consistency(session)
 
     total = sum(s.weight for s in signals)
@@ -625,4 +640,5 @@ def evaluate(session, calibration=None):
         "strongest_layer": strongest,
         "layers": by_layer,
         "signals": [s.as_dict() for s in signals],
+        "behavior_metrics": metrics,
     }

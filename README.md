@@ -1,28 +1,86 @@
 # botlab — a bot detection instrument
 
-botlab is a Chrome extension that measures the browser it runs in. Load it in a
-normal Chrome and it reports a clean browser. Load it inside an automated Chrome
-and it reports which layer identified the automation, with the evidence behind
-the verdict.
+botlab identifies automated browsers and reports which layer identified them,
+with the evidence behind the verdict.
 
 botlab detects automation. It does not evade detection. The code contains no
 evasion tool.
 
-## Shape
+## Two ways in
 
-The extension is the instrument. It scores seven layers from inside the browser
-and flags the instance with a full report.
+**The task page.** Point Selenium, Playwright, or any other tool at
+`https://127.0.0.1:8443/`. It performs three tasks — type into two fields,
+click three targets, drag a slider — and the harness reports whether a hand or
+a script did them. This is the path to use when the thing under test is an
+automation tool.
 
-A small Python backend is optional. It exists for the two layers no browser API
-can reach: the TLS handshake and the source address. It serves no test page.
+**The extension.** Load `extension/` into a browser and it measures that
+browser from the inside, on any page. This is the path to use when the thing
+under test is a browser build: a stealth-patched Chrome, an anti-detect
+product, a headless variant.
+
+Both post to the same Python backend, which adds the two layers no browser API
+can reach — the TLS handshake and the source address — and scores everything
+against one signal registry.
 
 ```
-   Chrome (real, headless, or patched)
-   ├── main world  ─┐
-   ├── isolated    ─┼─→ extension scores 7 layers ─→ badge, popup, full report
-   └── webRequest  ─┘                   │
-                                        └─ optional POST ─→ backend adds tls + network
+  automation tool ──→ task page ──┐
+                                  ├──→ backend: 9 layers ──→ report, dashboard, CSV
+  browser under test ─→ extension ┘
 ```
+
+## Run an automation tool against the task page
+
+```
+pip install cryptography
+python3 server.py --host 127.0.0.1 --port 8443
+```
+
+Then point a tool at it. Ready-to-run examples live in `examples/`:
+
+```
+python3 examples/playwright_naive.py --url https://127.0.0.1:8443
+python3 examples/playwright_human.py --url https://127.0.0.1:8443 --seed 7
+python3 examples/selenium_naive.py  --url https://127.0.0.1:8443
+```
+
+Each prints the score and a report URL. Open the URL for the evidence, or open
+`/dashboard` to compare runs.
+
+The page uses stable selectors — `#field-name`, `#field-email`, `#target-1`
+through `#target-3`, `#slider` — so every tool performs the identical task and
+the reports compare like for like. Pass `?label=` to name a run.
+
+A script can read its own verdict:
+
+```python
+result = page.evaluate("window.botlab.finish()")
+assert result["score"] < 30
+```
+
+If a script never calls `finish()`, the page sends itself once the required
+tasks are done and it has been quiet for 1.5 seconds. See `examples/README.md`.
+
+### What the behaviour layer reads
+
+The page keeps raw events and computes nothing. The server derives every
+metric, so a stored run can be re-scored when the rules change and a reader can
+recompute any number in a report.
+
+**Pointer.** Sampling density per 100 px travelled, path straightness measured
+per movement rather than across the session, step-length variation, speed,
+acceleration and jerk, corrective sub-movements, pauses, direction changes,
+jumps with no event between, whether coordinates are whole pixels, and whether
+`movementX` agrees with the change in position.
+
+**Keys.** Dwell — how long each key was held — and flight, the gap between
+presses, each with mean and spread; whether any key was held for zero time;
+typing speed; whether `keypress` fired at all; and whether text arrived with no
+key event, which is what `fill()` and `Input.insertText` produce.
+
+Movements are judged one at a time. A path that visits three targets in three
+corners is bent by the task, not by a hand, so a whole-session straightness
+ratio says nothing.
 
 ## Run the extension alone
 
@@ -59,13 +117,13 @@ that mode.
 |---|---|---|---|
 | network | backend | The source address | Reputation of the address range |
 | tls | backend | The raw ClientHello | The client sends no GREASE value |
-| http | extension | The real navigation headers and their order | The header order does not match Chrome |
-| browser | extension | The main-world fingerprint | The WebGL renderer is a software rasterizer |
-| worlds | extension | The two JavaScript worlds | The page and the browser disagree on `navigator.webdriver` |
-| runtime | extension | How the engine behaves | A CDP client is attached; `Error.prepareStackTrace` is set |
-| environment | extension | What the machine actually has | No camera, no voices, no licensed H.264 |
-| behavior | extension | Pointer path, key timing, `isTrusted` | The pointer path is a straight line |
-| consistency | extension | Every claim against every other | The User-Agent and `navigator.platform` disagree |
+| http | page, extension | The real navigation headers and their order | The header order does not match Chrome |
+| browser | page, extension | The page-visible fingerprint | The WebGL renderer is a software rasterizer |
+| worlds | extension only | The two JavaScript worlds | The page and the browser disagree on `navigator.webdriver` |
+| runtime | page, extension | How the engine behaves | A CDP client is attached; `Error.prepareStackTrace` is set |
+| environment | page, extension | What the machine actually has | No camera, no voices, no licensed H.264 |
+| behavior | page, extension | Pointer kinematics, keystroke dynamics, `isTrusted` | Keys were held for 3 ms; the pointer was placed, not moved |
+| consistency | page, extension | Every claim against every other | The User-Agent and `navigator.platform` disagree |
 
 The order is the order a production stack meets a client, so the first layer
 with a positive signal is the layer that would have caught it. The report names
@@ -157,8 +215,13 @@ Join the extension export and the harness export on the run label.
 | `extension/background.js` | Header capture, scoring, badge, history, harness delivery |
 | `extension/popup.html`, `popup.js` | The verdict and the settings |
 | `extension/report.html`, `report.js` | The full report and the exports |
+| `static/index.html` | The task page an automation tool drives |
+| `static/collector.js` | The raw telemetry capture and the page-side probes |
+| `static/report.html` | The report for one run, served at `/report/<id>` |
+| `examples/` | Runnable Playwright and Selenium clients |
 | `server.py` | The listener, the routes, the session store, the CSV export |
 | `tlsfp.py` | The ClientHello parser and the JA3 and JA4 functions |
+| `behavior.py` | The pointer and keystroke analysis behind the behaviour layer |
 | `scoring.py` | The signal registry, the layer weights, and the score |
 | `reference.py` | The header orders, the marker lists, the calibration file |
 | `calibrate.py` | The tool that files a measured fingerprint |
@@ -191,6 +254,13 @@ State these limits in any writeup. They set the boundary of the claim.
 6. The weights are hand-set, not learned. Report them as a transparent
    baseline.
 7. The behaviour layer reads one page view, not a profile across a session.
+8. **The behavioural thresholds have no human control group behind them.** The
+   key-dwell range in `behavior.py` comes from published keystroke-dynamics
+   work, not from runs against this harness, and the pointer thresholds are
+   reasoned rather than measured. Before reporting a false-positive rate, run
+   the task page yourself thirty times by hand, look at the distributions in
+   the reports, and set the constants at the top of `behavior.py` from your own
+   data. Every threshold is a named constant for exactly this reason.
 
 ## Extend the instrument
 

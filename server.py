@@ -20,6 +20,7 @@ import datetime
 import io
 import json
 import os
+import re
 import socket
 import ssl
 import struct
@@ -37,25 +38,16 @@ CERT_FILE = os.path.join(DATA_DIR, "harness-cert.pem")
 KEY_FILE = os.path.join(DATA_DIR, "harness-key.pem")
 LOG_FILE = os.path.join(DATA_DIR, "sessions.jsonl")
 
-BACKEND_NOTICE = """botlab backend
-
-This origin serves no test page. It exists so the botlab extension can add the
-two layers a browser cannot measure from the inside: the TLS handshake and the
-source address.
-
-  POST /collect        the extension posts its report here
-  GET  /dashboard      every scored session in one table
-  GET  /api/sessions   the same table as JSON
-  GET  /api/probe      score the caller itself, for non-browser clients
-  GET  /export.csv     every logged session as CSV
-
-Point the extension at this origin in its popup, then accept this certificate
-once by loading /dashboard in the same browser.
-"""
-
 SESSIONS = {}
 SESSION_ORDER = []
 LOCK = threading.Lock()
+
+# A page visit waits here between the navigation and the report that follows
+# it. The navigation is the request worth scoring on the http layer; the
+# report arrives later by fetch, whose headers describe nothing.
+PAGE_VISITS = collections.OrderedDict()
+MAX_PENDING_VISITS = 300
+TOKEN_PATTERN = re.compile(r"^[0-9a-f]{12}$")
 
 # Fingerprints wait here between the handshake and the first request on that
 # connection. A peer entry is keyed by (address, port), so a long run would
@@ -187,6 +179,45 @@ def new_session(handler):
     }
 
 
+def remember_visit(handler, token):
+    """Keep the navigation that served the task page, keyed by its run token."""
+    with LOCK:
+        tls = TLS_BY_PEER.get(handler.client_address)
+        PAGE_VISITS[token] = {
+            "headers": {name.lower(): value for name, value in handler.headers.items()},
+            "order": [name.lower() for name in handler.headers.keys()],
+            "tls": tls,
+            "ip": handler.client_address[0],
+        }
+        while len(PAGE_VISITS) > MAX_PENDING_VISITS:
+            PAGE_VISITS.popitem(last=False)
+
+
+def adopt_page_visit(session, token):
+    """Score the task-page run on its navigation, not on the report fetch.
+
+    Returns True when a matching visit was found. The token also becomes the
+    session id, so the page can link to its own report before the report
+    exists.
+    """
+    if not token or not TOKEN_PATTERN.match(str(token)):
+        return False
+    with LOCK:
+        visit = PAGE_VISITS.pop(token, None)
+    if not visit:
+        return False
+    session["id"] = token
+    session["transport_headers"] = session["headers"]
+    session["transport_header_order"] = session["header_order"]
+    session["headers"] = visit["headers"]
+    session["header_order"] = visit["order"]
+    session["header_source"] = "navigation"
+    session["ip"] = visit["ip"]
+    if visit.get("tls") and not session.get("tls"):
+        session["tls"] = visit["tls"]
+    return True
+
+
 def adopt_navigation_headers(session, supplied):
     """Score the http layer on the page navigation, not on the extension POST.
 
@@ -228,6 +259,25 @@ def store(session):
     return session["result"]
 
 
+def find_session(session_id):
+    """Return one stored session, from memory first and then from the log."""
+    with LOCK:
+        if session_id in SESSIONS:
+            return SESSIONS[session_id]
+    if not os.path.exists(LOG_FILE):
+        return None
+    found = None
+    with open(LOG_FILE) as handle:
+        for line in handle:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if record.get("id") == session_id:
+                found = record
+    return found
+
+
 def read_static(name):
     path = os.path.join(STATIC_DIR, os.path.basename(name))
     if not os.path.exists(path):
@@ -259,8 +309,36 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
 
-        if path == "/":
-            return self._send(200, BACKEND_NOTICE, "text/plain; charset=utf-8")
+        if path in ("/", "/index.html"):
+            page = read_static("index.html")
+            if page is None:
+                return self._send(404, "static/index.html is missing.",
+                                  "text/plain; charset=utf-8")
+            token = uuid.uuid4().hex[:12]
+            remember_visit(self, token)
+            return self._send(200, page.decode().replace("__SESSION_ID__", token))
+
+        if path == "/collector.js":
+            body = read_static("collector.js")
+            if body is None:
+                return self._send(404, "static/collector.js is missing.",
+                                  "text/plain; charset=utf-8")
+            return self._send(200, body, "application/javascript; charset=utf-8")
+
+        if path.startswith("/report/"):
+            page = read_static("report.html")
+            if page is None:
+                return self._send(404, "static/report.html is missing.",
+                                  "text/plain; charset=utf-8")
+            return self._send(200, page.decode())
+
+        if path.startswith("/api/report/"):
+            wanted = path.rsplit("/", 1)[-1]
+            record = find_session(wanted)
+            if record is None:
+                return self._send(404, json.dumps({"error": "No session has that id."}),
+                                  "application/json")
+            return self._send(200, json.dumps(record), "application/json")
 
         if path == "/dashboard":
             page = read_static("dashboard.html")
@@ -313,7 +391,10 @@ class Handler(BaseHTTPRequestHandler):
         session["behavior"] = payload.get("behavior")
         session["label"] = payload.get("label", "")
         session["page_url"] = payload.get("page_url", "")
-        adopt_navigation_headers(session, payload.get("request"))
+        # The task page identifies itself with the token it was served. The
+        # extension has no token and forwards the navigation it observed.
+        if not adopt_page_visit(session, payload.get("session")):
+            adopt_navigation_headers(session, payload.get("request"))
         result = store(session)
 
         # Hand back what the extension could not measure for itself, so its
@@ -396,10 +477,11 @@ def main():
     server = PeekingServer((args.host, args.port), Handler, context)
     scheme = "http" if args.no_tls else "https"
     origin = "%s://%s:%d" % (scheme, args.host, args.port)
-    print("Backend:    %s" % origin)
+    print("Task page:  %s/" % origin)
     print("Dashboard:  %s/dashboard" % origin)
     print("CSV export: %s/export.csv" % origin)
-    print("Set %s as the harness URL in the extension popup." % origin)
+    print("Point an automation tool at the task page, or set %s as the" % origin)
+    print("harness URL in the extension popup.")
     print("Stop the server with Ctrl+C.")
     try:
         server.serve_forever()
