@@ -11,14 +11,11 @@ layer caught a client, which is the measurement a thesis needs.
 import math
 import statistics
 
-import behavior
-import reference
+from src.constants import LAYERS, VERDICT_BANDS
 
-# The order is the order a production stack meets the client. `first_catching
-# _layer` reads this list from the top, so the earliest layer that flags a
-# client is the one reported. Consistency sits last because it needs the rest.
-LAYERS = ["network", "tls", "http", "browser", "worlds", "runtime",
-          "environment", "behavior", "consistency"]
+from . import behavior, reference
+
+__all__ = ["LAYERS", "Signal", "evaluate"]
 
 
 class Signal:
@@ -623,14 +620,11 @@ def evaluate(session, calibration=None):
             earliest = name
             break
 
-    if score <= 10:
-        verdict = "automated"
-    elif score <= 30:
-        verdict = "likely automated"
-    elif score <= 60:
-        verdict = "unclear"
-    else:
-        verdict = "likely human"
+    verdict = VERDICT_BANDS[-1][1]
+    for ceiling, band in VERDICT_BANDS:
+        if score <= ceiling:
+            verdict = band
+            break
 
     return {
         "score": score,

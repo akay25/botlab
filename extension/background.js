@@ -90,12 +90,14 @@ async function forward(report, config, request) {
     behavior: report.behavior
   };
   try {
-    const response = await fetch(config.harnessUrl.replace(/\/$/, "") + "/collect", {
+    const response = await fetch(config.harnessUrl.replace(/\/$/, "") + "/api/collect", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload)
     });
-    const serverResult = await response.json();
+    const envelope = await response.json();
+    /* The API wraps every reply as {success, message, data}. */
+    const serverResult = envelope && envelope.data ? envelope.data : envelope;
     return { sent: true, serverScore: serverResult.score, serverResult };
   } catch (error) {
     return { sent: false, reason: "The harness did not answer. Check the URL." };

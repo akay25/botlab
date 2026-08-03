@@ -5,3 +5,10 @@ __pycache__/
 data/*.jsonl
 data/*.json
 data/*.pem
+
+# Environment
+.env
+.venv/
+
+# Pipenv
+Pipfile.lock

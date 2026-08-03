@@ -4,7 +4,7 @@ Each script drives the task page at `/` end to end and prints the score the
 harness returned. Start the harness first:
 
 ```
-python3 server.py --host 127.0.0.1 --port 8443
+python -m src
 ```
 
 | Script | Tool | What it does |
@@ -14,9 +14,9 @@ python3 server.py --host 127.0.0.1 --port 8443
 | `selenium_naive.py` | Selenium | `send_keys()` and `click()` |
 
 ```
-python3 examples/playwright_naive.py --url https://127.0.0.1:8443
-python3 examples/playwright_human.py --url https://127.0.0.1:8443 --seed 7
-python3 examples/selenium_naive.py  --url https://127.0.0.1:8443
+python examples/playwright_naive.py --url https://127.0.0.1:8443
+python examples/playwright_human.py --url https://127.0.0.1:8443 --seed 7
+python examples/selenium_naive.py  --url https://127.0.0.1:8443
 ```
 
 Every script prints a report URL. Open it to see the evidence behind the score.

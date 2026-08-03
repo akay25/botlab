@@ -305,12 +305,12 @@
   }
 
   var id = location.pathname.replace(/\/+$/, "").split("/").pop();
-  fetch("/api/report/" + encodeURIComponent(id))
+  fetch("/api/sessions/" + encodeURIComponent(id))
     .then(function (r) {
       if (!r.ok) { throw new Error("not found"); }
       return r.json();
     })
-    .then(render)
+    .then(function (envelope) { render(envelope.data); })
     .catch(function () {
       document.getElementById("body").innerHTML =
         '<div class="empty">No run has the id ' + id + '. It may have been trimmed ' +

@@ -13,8 +13,7 @@ browser to fill it. Do not cite a table you did not measure.
 import json
 import os
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
-CALIBRATION_FILE = os.path.join(DATA_DIR, "calibration.json")
+from src.loaders.config import config
 
 # Header order that each browser family sends on a top-level HTTP/1.1 request.
 # The order is a strong signal. An HTTP library rarely reproduces it.
@@ -83,9 +82,9 @@ AUTOMATION_WINDOW_KEYS = [
 def load_calibration():
     """Return the calibrated fingerprint table. Return empty sets if none exists."""
     default = {"human_ja4": {}, "automation_ja4": {}, "human_ja3": {}, "automation_ja3": {}}
-    if not os.path.exists(CALIBRATION_FILE):
+    if not os.path.exists(config.calibration_file):
         return default
-    with open(CALIBRATION_FILE) as handle:
+    with open(config.calibration_file) as handle:
         stored = json.load(handle)
     default.update(stored)
     return default
@@ -93,8 +92,8 @@ def load_calibration():
 
 def save_calibration(table):
     """Write the calibrated fingerprint table to disk."""
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CALIBRATION_FILE, "w") as handle:
+    os.makedirs(config.DATA_DIR, exist_ok=True)
+    with open(config.calibration_file, "w") as handle:
         json.dump(table, handle, indent=2, sort_keys=True)
 
 

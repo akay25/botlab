@@ -558,11 +558,13 @@
         environment: slow.environment,
         behavior: telemetry
       };
-      return fetch("/collect", {
+      return fetch("/api/collect", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
-      }).then(function (r) { return r.json(); }).then(function (result) {
+      }).then(function (r) { return r.json(); }).then(function (envelope) {
+        /* The API wraps every reply as {success, message, data}. */
+        var result = envelope && envelope.data ? envelope.data : envelope;
         window.botlab.result = result;
         return result;
       });

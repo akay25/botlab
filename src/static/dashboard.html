@@ -46,7 +46,7 @@
     <span>rows <b id="count">0</b></span>
     <span>refresh <b>3 s</b></span>
     <span><a href="/">backend</a></span>
-    <span><a href="/export.csv">export.csv</a></span>
+    <span><a href="/api/export.csv">export.csv</a></span>
   </div>
 </header>
 <div id="host"><div class="empty">No session has arrived yet. Point the extension at this
@@ -91,7 +91,8 @@ function render(rows) {
 
 function poll() {
   fetch("/api/sessions").then(function (r) { return r.json(); })
-    .then(render).catch(function () { /* the server is not reachable */ });
+    .then(function (envelope) { render((envelope.data || {}).sessions || []); })
+    .catch(function () { /* the server is not reachable */ });
 }
 poll();
 setInterval(poll, 3000);

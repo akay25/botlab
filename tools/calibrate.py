@@ -18,17 +18,20 @@ Example:
 import argparse
 import json
 import os
+import sys
 
-import reference
-import server
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.detection import reference          # noqa: E402
+from src.loaders.config import config        # noqa: E402
 
 
 def latest_session(label_filter=""):
     """Return the newest logged session that carried a TLS fingerprint."""
-    if not os.path.exists(server.LOG_FILE):
+    if not os.path.exists(config.log_file):
         return None
     newest = None
-    with open(server.LOG_FILE) as handle:
+    with open(config.log_file) as handle:
         for line in handle:
             try:
                 record = json.loads(line)

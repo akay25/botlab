@@ -32,7 +32,7 @@ worthless without a version number.
 The last row is the control. Without it you cannot report a false-positive rate.
 
 The browser classes carry the extension. The first two classes cannot load an
-extension, so they reach the backend through `client_matrix.py` instead and are
+extension, so they reach the backend through `tools/client_matrix.py` instead and are
 scored on the network, TLS, HTTP and consistency layers alone.
 
 ## 3. Run the trials
@@ -46,7 +46,7 @@ scored on the network, TLS, HTTP and consistency layers alone.
 6. For the browser classes, interact with the page in each run, and record
    whether a DevTools window was open. It trips `runtime.cdp_attached` the same
    way an automation driver does.
-7. Export the data with `/export.csv`, and the per-browser history with
+7. Export the data with `/api/export.csv`, and the per-browser history with
    **Export history CSV** in the popup. Join them on the run label.
 
 Thirty runs per class gives enough spread to report a mean and a standard

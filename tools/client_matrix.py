@@ -21,7 +21,9 @@ import subprocess
 import sys
 import urllib.request
 
-import scoring
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.constants import LAYERS             # noqa: E402
 
 CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
@@ -44,6 +46,13 @@ CHROME_HEADERS = [
 ]
 
 
+def _unwrap(envelope):
+    """Every API reply is wrapped as {success, message, data}."""
+    if isinstance(envelope, dict) and "data" in envelope:
+        return envelope["data"]
+    return envelope
+
+
 def probe_urllib(url, label, headers=None):
     """Send one request with the Python standard library client."""
     context = ssl.create_default_context()
@@ -54,7 +63,7 @@ def probe_urllib(url, label, headers=None):
         for name, value in headers:
             request.add_header(name, value)
     with urllib.request.urlopen(request, context=context, timeout=10) as response:
-        return json.loads(response.read().decode())
+        return _unwrap(json.loads(response.read().decode()))
 
 
 def probe_curl(url, label, extra=None):
@@ -68,7 +77,7 @@ def probe_curl(url, label, extra=None):
     if output.returncode != 0:
         return None
     try:
-        return json.loads(output.stdout.decode())
+        return _unwrap(json.loads(output.stdout.decode()))
     except ValueError:
         return None
 
@@ -80,7 +89,7 @@ def row(record):
     result = record.get("result", {})
     tls = record.get("tls") or {}
     layers = result.get("layers", {})
-    hot = [name for name in scoring.LAYERS
+    hot = [name for name in LAYERS
            if layers.get(name, {}).get("weight", 0) > 0]
     return {
         "label": record.get("label", ""),
