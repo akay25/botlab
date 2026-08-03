@@ -59,5 +59,6 @@ async def collect(body: CollectPayload, request: Request, response: Response):
         "session_id": current["id"],
         "ip": current["ip"],
         "header_source": current.get("header_source"),
+        "tls_measured": current.get("tls_measured"),
         "tls": current.get("tls"),
     })

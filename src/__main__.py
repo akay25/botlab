@@ -32,6 +32,13 @@ def main() -> None:
     print("API docs:   %s/docs" % origin)
     print("Point an automation tool at the task page, or set %s" % origin)
     print("as the harness URL in the extension popup.")
+    if config.TLS_ENABLED:
+        print("")
+        print("uvicorn logs an internal address on port %d below. Ignore it."
+              % config.upstream_port)
+        print("Use port %d. That is the only port that reads the TLS handshake;"
+              % config.APP_PORT)
+        print("anything sent to %d is redirected there." % config.upstream_port)
     print("Stop with Ctrl+C.")
 
     if config.TLS_ENABLED:

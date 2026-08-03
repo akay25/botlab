@@ -168,19 +168,25 @@ front end.
 
 ### Two ports, and only one of them is yours
 
-Clients talk to `APP_PORT`. uvicorn listens on `APP_PORT + 1`, or on
-`TLS_UPSTREAM_PORT` if you set one.
+Clients talk to `APP_PORT`, which is `8443` by default. uvicorn listens on
+`APP_PORT + 1`, or on `TLS_UPSTREAM_PORT` if you set one.
 
-**Send nothing to the upstream port.** It answers, because it is a complete
-HTTPS server, but the request never passes the front end and no handshake is
-read. The harness says so rather than pretending: a run made that way carries
-`tls.not_measured` at weight 0, not `tls.absent` at weight 1. The difference
-matters. `tls.absent` is a claim about the client — it sent no ClientHello.
-`tls.not_measured` is a fact about the harness — it was not in a position to
-look. Charging a client for the second would quietly corrupt every run made
-through a misconfigured harness.
+**uvicorn logs the upstream port on startup. Ignore that line.** It reads like
+an invitation, but a client that accepts it bypasses the front end, and the
+request succeeds while quietly losing its TLS layer.
 
-The same signal appears when `TLS_ENABLED=false`, for the same reason.
+Anything arriving on the upstream port is redirected to the public port with a
+307, which preserves the method and the body, so a report posted to the wrong
+port still lands and still gets fingerprinted. A browser that loads the task
+page from the wrong port is bounced before the page is served, so everything
+it does afterwards is same-origin and correct. Nothing is lost either way.
+
+If a request somehow reaches the app without passing the front end, the run
+carries `tls.not_measured` at weight 0 rather than `tls.absent` at weight 1.
+The difference matters: `tls.absent` is a claim about the client — it sent no
+ClientHello. `tls.not_measured` is a fact about the harness — it was not in a
+position to look. Charging a client for the second would quietly corrupt the
+run. The same signal appears when `TLS_ENABLED=false`, for the same reason.
 
 ## The nine layers
 

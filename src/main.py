@@ -1,7 +1,7 @@
 # Regular imports
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 # Local imports
 from .loaders.app_lifespan import app_lifespan
@@ -27,6 +27,40 @@ app.logger.propagate = True  # type: ignore
 
 origins = ["*"] if config.ALLOWED_HOSTS.strip() == "*" \
     else list(config.ALLOWED_HOSTS.split(","))
+
+
+# Defined before the CORS middleware is added, so CORS ends up outermost and
+# wraps the redirect below. A cross-origin client must see the redirect as a
+# valid CORS response before it will follow it.
+@app.middleware("http")
+async def redirect_upstream_traffic(request: Request, call_next):
+    """Send anything that reached uvicorn directly back to the public port.
+
+    With TLS on, uvicorn listens on the upstream port and the ClientHello
+    front end listens on the public one. uvicorn logs its own banner naming
+    the upstream port, which reads like an invitation, and a client that
+    accepts it bypasses the front end: the request still succeeds, but no
+    handshake is ever read and the run silently loses its tls layer.
+
+    The Host header says which port the client aimed at, so the mistake is
+    visible and worth correcting rather than merely reporting. 307 keeps the
+    method and the body, so a report posted to the wrong port still lands.
+    """
+    if not config.TLS_ENABLED:
+        return await call_next(request)
+
+    host = request.headers.get("host", "")
+    if not host.endswith(":%d" % config.upstream_port):
+        return await call_next(request)
+
+    target = "https://%s:%d%s" % (config.APP_HOST, config.APP_PORT, request.url.path)
+    if request.url.query:
+        target = "%s?%s" % (target, request.url.query)
+    app.logger.warning(  # type: ignore
+        "Redirecting %s %s from the upstream port to %s",
+        request.method, request.url.path, target)
+    return RedirectResponse(target, status_code=307)
+
 
 # The extension reports from whatever origin the page under test is on, so it
 # is a genuinely cross-origin client of this API.
