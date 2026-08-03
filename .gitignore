@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+# Measured data and generated certificates. Never commit a run.
+data/*.jsonl
+data/*.json
+data/*.pem
