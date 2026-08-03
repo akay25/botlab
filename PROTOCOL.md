@@ -31,22 +31,32 @@ worthless without a version number.
 
 The last row is the control. Without it you cannot report a false-positive rate.
 
+The browser classes carry the extension. The first two classes cannot load an
+extension, so they reach the backend through `client_matrix.py` instead and are
+scored on the network, TLS, HTTP and consistency layers alone.
+
 ## 3. Run the trials
 
-1. Start the harness on a machine you control.
+1. Start the backend on a machine you control.
 2. Clear `data/sessions.jsonl` before the first trial.
-3. Calibrate the real browser and the automation clients.
-4. Run each client class thirty times. Use one run label per class.
-5. For the browser classes, interact with the page in each run.
-6. Export the data with `/export.csv`.
+3. Load the extension in each browser class and set the harness URL and the run
+   label in its popup. Turn on automatic sending.
+4. Calibrate the real browser and the automation clients.
+5. Run each client class thirty times. Use one run label per class.
+6. For the browser classes, interact with the page in each run, and record
+   whether a DevTools window was open. It trips `runtime.cdp_attached` the same
+   way an automation driver does.
+7. Export the data with `/export.csv`, and the per-browser history with
+   **Export history CSV** in the popup. Join them on the run label.
 
 Thirty runs per class gives enough spread to report a mean and a standard
 deviation. Fewer runs give a number that a reviewer can question.
 
 ## 4. Report these tables
 
-**Table A — detection by layer.** One row per client class. One column per
-layer. Each cell holds the share of runs that the layer flagged. This table
+**Table A — detection by layer.** One row per client class. One column per each
+of the nine layers. Each cell holds the share of runs that the layer flagged.
+The `w_` columns of the export give the per-layer weights directly. This table
 shows where each class fails.
 
 **Table B — score distribution.** One row per client class. Report the mean
@@ -97,3 +107,9 @@ State each threat and how you handled it.
    system without a caveat. Frame the claim as a mechanism study.
 4. **Small behavior sample.** The behavior layer reads one page view. Do not
    claim a result about long-session behavior modeling.
+5. **Debugger ambiguity.** `runtime.cdp_attached` fires for any Chrome DevTools
+   Protocol client, including an open DevTools window. Record the DevTools state
+   of every run, or the control class inherits an automation signal.
+6. **Instrument reach.** The strongest layers need an extension, and a website
+   cannot install one. Frame the `worlds`, `runtime` and `environment` results
+   as a mechanism study, not as a deployable detector.

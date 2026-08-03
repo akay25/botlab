@@ -5,8 +5,9 @@ JA4 hash changes with every browser release. A table you copied from a blog
 post is not evidence.
 
 Procedure:
-  1. Start the server.
-  2. Open the test page in the client you want to record.
+  1. Start the backend.
+  2. Send a report from the client you want to record. A browser sends one
+     through the extension; a non-browser client through client_matrix.py.
   3. Run this script with the class and the label for that client.
 
 Example:
@@ -59,7 +60,8 @@ def main():
 
     record = latest_session(args.match_label)
     if record is None:
-        print("No logged session carries a TLS fingerprint. Start the server and load the page.")
+        print("No logged session carries a TLS fingerprint. Start the backend and send a "
+              "report from the client you want to record.")
         return
 
     tls = record["tls"]

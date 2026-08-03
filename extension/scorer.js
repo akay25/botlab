@@ -1,9 +1,14 @@
 /* Score a report inside the browser.
 
-   The extension cannot read the TLS handshake, so it scores five layers only.
-   The server scores six. Send the report to the harness for the full score. */
+   The extension cannot read a TLS handshake and cannot see its own source
+   address, so it scores seven of the nine layers. Send the report to the
+   harness and the server adds the tls and network layers to these.
 
-export const LAYERS = ["http", "browser", "behavior", "worlds", "consistency"];
+   The order below is the order a production stack meets a client, so the
+   first layer with a positive signal is the one that would have caught it. */
+
+export const LAYERS = ["http", "browser", "worlds", "runtime", "environment",
+  "behavior", "consistency"];
 
 const SOFTWARE_RENDERERS = [
   "swiftshader", "llvmpipe", "software rasterizer", "mesa offscreen",
@@ -128,6 +133,146 @@ function scoreBrowser(main) {
     out.push(signal("browser", "browser.low_concurrency", 0.7,
       "The browser reports one CPU thread or none."));
   }
+  if (main.permission_mismatch) {
+    out.push(signal("browser", "browser.permission_mismatch", 1.7,
+      "The Permissions API and Notification.permission disagree."));
+  }
+  if (typeof main.font_count === "number" && main.font_count < 8) {
+    out.push(signal("browser", "browser.few_fonts", 1.1,
+      `The client resolved ${main.font_count} fonts. A desktop install resolves many more.`));
+  }
+  if (!main.canvas_hash || main.canvas_hash === "0") {
+    out.push(signal("browser", "browser.no_canvas", 1.2, "Canvas rendering returned nothing."));
+  } else {
+    out.push(signal("browser", "browser.canvas_present", -0.4, "Canvas returned a stable hash."));
+  }
+  return out;
+}
+
+/* Read how the engine behaves, not what it claims. A client that rewrites
+   every property still fails here unless it also rebuilds the engine. */
+function scoreRuntime(runtime) {
+  const out = [];
+  if (!runtime || !Object.keys(runtime).length) { return out; }
+
+  if (runtime.cdp_runtime_enabled) {
+    out.push(signal("runtime", "runtime.cdp_attached", 2.9,
+      "Logging an Error read its stack getter. A Chrome DevTools Protocol client " +
+      "is attached. An open DevTools window reads it the same way, so record " +
+      "whether one was open."));
+  }
+  if (runtime.webdriver_own_property) {
+    out.push(signal("runtime", "runtime.webdriver_relocated", 2.8,
+      "navigator.webdriver is an own property of the instance. Chrome defines it " +
+      "on Navigator.prototype. A patch moved it."));
+  } else if (runtime.webdriver_on_prototype === false) {
+    out.push(signal("runtime", "runtime.webdriver_deleted", 1.8,
+      "Navigator.prototype carries no webdriver property at all. A patch deleted it."));
+  }
+  if ((runtime.stack_markers || []).length) {
+    out.push(signal("runtime", "runtime.injected_stack", 3.0,
+      `A stack trace names an injected script: ${runtime.stack_markers.slice(0, 3).join(", ")}.`));
+  }
+  if (runtime.prepare_stack_trace_set) {
+    out.push(signal("runtime", "runtime.prepare_stack_trace_set", 2.6,
+      "Error.prepareStackTrace is defined. Chrome leaves it undefined. A stealth " +
+      "plugin sets it to scrub its own frames from traces."));
+  }
+  if (runtime.tostring_chain_native === false) {
+    out.push(signal("runtime", "runtime.tostring_chain_patched", 2.6,
+      "Function.prototype.toString has itself been replaced. A stealth patch hides " +
+      "other patches and forgets to hide this one."));
+  }
+
+  /* A hidden tab throttles its frame clock to nothing, so a real browser in a
+     background tab looks like a window with no compositor. Read these only
+     when the page was visible while they were measured. */
+  const visible = runtime.visibility === undefined ||
+    runtime.visibility === "visible" || runtime.visibility === "unknown";
+  if (!visible) {
+    out.push(signal("runtime", "runtime.frame_clock_not_measured", 0,
+      "The page was hidden during the probe. The frame clock says nothing here."));
+  } else if (runtime.frame_count === 0) {
+    out.push(signal("runtime", "runtime.no_animation_frame", 1.7,
+      "requestAnimationFrame never fired. A window with no compositor reports this."));
+  } else if (runtime.frame_count) {
+    if (runtime.frame_stdev_ms !== null && runtime.frame_stdev_ms < 0.2) {
+      out.push(signal("runtime", "runtime.synthetic_frame_clock", 0.8,
+        `The frame interval never varies. Spread ${runtime.frame_stdev_ms} ms. A display ` +
+        "refresh jitters; a generated clock does not."));
+    } else {
+      out.push(signal("runtime", "runtime.frame_clock_present", -0.5,
+        "The frame clock runs and jitters as a display does."));
+    }
+  }
+  return out;
+}
+
+/* A stealth patch rewrites what the browser says. It does not install a sound
+   card, a camera, a voice pack, or a licensed codec. */
+function scoreEnvironment(environment, main) {
+  const out = [];
+  if (!environment) { return out; }
+  const ua = ((main && main.user_agent) || "").toLowerCase();
+  const isChrome = ua.includes("chrome/") || ua.includes("chromium") || ua.includes("edg/");
+
+  if (environment.media_device_count === 0) {
+    out.push(signal("environment", "environment.no_media_devices", 1.6,
+      "The browser enumerated no camera and no microphone. A desktop install " +
+      "reports at least one."));
+  } else if (environment.media_device_count) {
+    out.push(signal("environment", "environment.media_devices_present", -0.5,
+      `The browser enumerated ${environment.media_device_count} media devices.`));
+  }
+
+  if (environment.voice_count === 0) {
+    out.push(signal("environment", "environment.no_speech_voices", 1.3,
+      "The speech synthesizer holds no voices. A desktop install carries the " +
+      "system voice pack."));
+  } else if (environment.voice_count) {
+    out.push(signal("environment", "environment.speech_voices_present", -0.4,
+      `The speech synthesizer holds ${environment.voice_count} voices.`));
+  }
+
+  const codecs = environment.codecs || {};
+  if (Object.keys(codecs).length && !codecs.h264) {
+    out.push(signal("environment", "environment.no_proprietary_codecs", 2.2,
+      "The build cannot play H.264. Chrome ships the licensed codecs. The plain " +
+      "Chromium build that automation downloads does not."));
+  } else if (codecs.h264) {
+    out.push(signal("environment", "environment.proprietary_codecs_present", -0.6,
+      "The build plays H.264, as a released Chrome does."));
+  }
+
+  if (isChrome && environment.pdf_viewer_enabled === false) {
+    out.push(signal("environment", "environment.no_pdf_viewer", 1.2,
+      "navigator.pdfViewerEnabled is false. Desktop Chrome ships the PDF viewer " +
+      "and reports true."));
+  }
+  if (isChrome && environment.battery_api === false) {
+    out.push(signal("environment", "environment.no_battery_api", 0.9,
+      "navigator.getBattery is absent. Desktop Chrome exposes it."));
+  }
+
+  if (environment.ice_candidate_count === 0 && environment.webrtc_supported) {
+    out.push(signal("environment", "environment.no_ice_candidates", 1.4,
+      "WebRTC gathering finished with no candidate. The host has no reachable " +
+      "network interface."));
+  } else if (environment.ice_candidate_count) {
+    out.push(signal("environment", "environment.ice_candidates_present", -0.4,
+      `WebRTC gathered ${environment.ice_candidate_count} candidates.`));
+  }
+
+  if (environment.storage_quota === 0) {
+    out.push(signal("environment", "environment.no_storage_quota", 0.7,
+      "The origin was granted no storage quota."));
+  }
+
+  const states = Object.values(environment.permissions || {});
+  if (states.length >= 3 && states.every((s) => s === "denied")) {
+    out.push(signal("environment", "environment.all_permissions_denied", 1.0,
+      "Every queried permission returned denied. A headless profile answers this way."));
+  }
   return out;
 }
 
@@ -137,6 +282,11 @@ function scoreBehavior(behavior) {
   if (behavior.untrusted_events > 0) {
     out.push(signal("behavior", "behavior.untrusted_events", 2.9,
       `${behavior.untrusted_events} events carried isTrusted false. A script dispatched them.`));
+  }
+  const scrolls = behavior.scroll_deltas || [];
+  if (scrolls.length >= 4 && new Set(scrolls).size === 1) {
+    out.push(signal("behavior", "behavior.uniform_scroll", 1.4,
+      `Every wheel event carried the same delta of ${scrolls[0]}. A wheel emits a varying delta.`));
   }
   if (behavior.clicks > 0 && behavior.mouse.length < 3) {
     out.push(signal("behavior", "behavior.click_without_move", 2.2,
@@ -255,8 +405,10 @@ export function evaluateReport(report, request) {
   const signals = [
     ...scoreHttp(order, headers),
     ...scoreBrowser(report.main_world),
-    ...scoreBehavior(report.behavior),
     ...scoreWorlds(report.divergences),
+    ...scoreRuntime(report.runtime),
+    ...scoreEnvironment(report.environment, report.main_world),
+    ...scoreBehavior(report.behavior),
     ...scoreConsistency(report.main_world, headers)
   ];
 
@@ -269,6 +421,7 @@ export function evaluateReport(report, request) {
     const rows = signals.filter((s) => s.layer === name);
     layers[name] = {
       weight: Number(rows.reduce((sum, s) => sum + s.weight, 0).toFixed(3)),
+      count: rows.length,
       ids: rows.filter((s) => s.weight > 0).map((s) => s.id)
     };
   });

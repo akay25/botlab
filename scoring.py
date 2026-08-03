@@ -13,7 +13,11 @@ import statistics
 
 import reference
 
-LAYERS = ["network", "tls", "http", "browser", "worlds", "behavior", "consistency"]
+# The order is the order a production stack meets the client. `first_catching
+# _layer` reads this list from the top, so the earliest layer that flags a
+# client is the one reported. Consistency sits last because it needs the rest.
+LAYERS = ["network", "tls", "http", "browser", "worlds", "runtime",
+          "environment", "behavior", "consistency"]
 
 
 class Signal:
@@ -120,6 +124,10 @@ def _order_distance(seen, canonical):
 def score_http(session):
     """Check the request headers, their order, and the declared client."""
     out = []
+    if session.get("header_source") == "unavailable":
+        return [Signal("http", "http.headers_not_captured", 0.0,
+                       "The extension captured no top-level navigation for this tab, so the "
+                       "http layer read nothing. Reload the page under test.")]
     headers = session.get("headers", {})
     order = session.get("header_order", [])
     user_agent = headers.get("user-agent", "")
@@ -209,10 +217,13 @@ def score_browser(session):
         out.append(Signal("browser", "browser.missing_chrome_object", 1.5,
                           "The User-Agent claims Chrome but window.chrome is absent."))
 
-    if fp.get("font_count", 99) < 8:
+    # A failed font probe reports nothing rather than zero, so read the count
+    # only when the client actually sent a number.
+    fonts = fp.get("font_count")
+    if isinstance(fonts, int) and fonts < 8:
         out.append(Signal("browser", "browser.few_fonts", 1.1,
                           "The client resolved %d fonts. A desktop install resolves many more."
-                          % fp.get("font_count", 0)))
+                          % fonts))
 
     if fp.get("hardware_concurrency", 0) in (0, 1):
         out.append(Signal("browser", "browser.low_concurrency", 0.7,
@@ -255,6 +266,20 @@ def score_behavior(session):
     moves = beh.get("mouse", [])
     clicks = beh.get("clicks", 0)
     keys = beh.get("key_intervals", [])
+
+    # An isolated-world listener reads isTrusted before page code can swap the
+    # event object. A false flag means a script dispatched the event.
+    untrusted = beh.get("untrusted_events", 0)
+    if untrusted:
+        out.append(Signal("behavior", "behavior.untrusted_events", 2.9,
+                          "%d events carried isTrusted false. A script dispatched them."
+                          % untrusted))
+
+    scrolls = beh.get("scroll_deltas") or []
+    if len(scrolls) >= 4 and len(set(scrolls)) == 1:
+        out.append(Signal("behavior", "behavior.uniform_scroll", 1.4,
+                          "Every wheel event carried the same delta of %s. A wheel emits a "
+                          "varying delta." % scrolls[0]))
 
     if clicks and len(moves) < 3:
         out.append(Signal("behavior", "behavior.click_without_move", 2.2,
@@ -321,6 +346,154 @@ def score_worlds(session):
     return out
 
 
+# ---------------------------------------------------------------- runtime
+
+def score_runtime(session):
+    """Check the JavaScript engine for the marks that a driver leaves.
+
+    These signals do not read what the browser claims. They read how the
+    engine behaves, so a client that rewrites every property still fails
+    here unless it also rebuilds the engine.
+    """
+    out = []
+    rt = session.get("runtime")
+    if not rt:
+        return out
+
+    if rt.get("cdp_runtime_enabled"):
+        out.append(Signal("runtime", "runtime.cdp_attached", 2.9,
+                          "Logging an Error read its stack getter. A Chrome DevTools "
+                          "Protocol client is attached. An open DevTools window reads it "
+                          "the same way, so record whether one was open."))
+
+    # Chrome defines webdriver on Navigator.prototype. A stealth patch usually
+    # redefines it on the navigator instance, which moves the property.
+    if rt.get("webdriver_own_property"):
+        out.append(Signal("runtime", "runtime.webdriver_relocated", 2.8,
+                          "navigator.webdriver is an own property of the instance. Chrome "
+                          "defines it on Navigator.prototype. A patch moved it."))
+    elif rt.get("webdriver_on_prototype") is False:
+        out.append(Signal("runtime", "runtime.webdriver_deleted", 1.8,
+                          "Navigator.prototype carries no webdriver property at all. "
+                          "A patch deleted it."))
+
+    markers = rt.get("stack_markers") or []
+    if markers:
+        out.append(Signal("runtime", "runtime.injected_stack", 3.0,
+                          "A stack trace names an injected script: %s."
+                          % ", ".join(markers[:3])))
+
+    if rt.get("prepare_stack_trace_set"):
+        out.append(Signal("runtime", "runtime.prepare_stack_trace_set", 2.6,
+                          "Error.prepareStackTrace is defined. Chrome leaves it undefined. "
+                          "A stealth plugin sets it to scrub its own frames from traces."))
+
+    if rt.get("tostring_chain_native") is False:
+        out.append(Signal("runtime", "runtime.tostring_chain_patched", 2.6,
+                          "Function.prototype.toString has itself been replaced. A stealth "
+                          "patch hides other patches and forgets to hide this one."))
+
+    # A hidden tab throttles its frame clock to nothing, so a real browser in a
+    # background tab looks exactly like a window with no compositor. Read the
+    # frame signals only when the page was visible while they were measured.
+    frames = rt.get("frame_count")
+    visible = rt.get("visibility") in (None, "visible", "unknown")
+    if not visible:
+        out.append(Signal("runtime", "runtime.frame_clock_not_measured", 0.0,
+                          "The page was hidden during the probe. The frame clock says "
+                          "nothing about this client."))
+    elif frames == 0:
+        out.append(Signal("runtime", "runtime.no_animation_frame", 1.7,
+                          "requestAnimationFrame never fired. A window with no compositor "
+                          "reports this."))
+    elif frames:
+        spread = rt.get("frame_stdev_ms")
+        if spread is not None and spread < 0.2:
+            out.append(Signal("runtime", "runtime.synthetic_frame_clock", 0.8,
+                              "The frame interval never varies. Spread %.3f ms. A display "
+                              "refresh jitters; a generated clock does not." % spread))
+        else:
+            out.append(Signal("runtime", "runtime.frame_clock_present", -0.5,
+                              "The frame clock runs and jitters as a display does."))
+    return out
+
+
+# ------------------------------------------------------------ environment
+
+def score_environment(session):
+    """Check the capabilities that a desktop install has and a container lacks.
+
+    A stealth patch rewrites what the browser says. It does not install a
+    sound card, a camera, a voice pack, or a licensed codec.
+    """
+    out = []
+    env = session.get("environment")
+    if not env:
+        return out
+
+    family = reference.ua_family(session.get("headers", {}).get("user-agent", ""))
+
+    devices = env.get("media_device_count")
+    if devices == 0:
+        out.append(Signal("environment", "environment.no_media_devices", 1.6,
+                          "The browser enumerated no camera and no microphone. A desktop "
+                          "install reports at least one."))
+    elif devices:
+        out.append(Signal("environment", "environment.media_devices_present", -0.5,
+                          "The browser enumerated %d media devices." % devices))
+
+    voices = env.get("voice_count")
+    if voices == 0:
+        out.append(Signal("environment", "environment.no_speech_voices", 1.3,
+                          "The speech synthesizer holds no voices. A desktop install "
+                          "carries the system voice pack."))
+    elif voices:
+        out.append(Signal("environment", "environment.speech_voices_present", -0.4,
+                          "The speech synthesizer holds %d voices." % voices))
+
+    # Chrome ships licensed H.264 and AAC. The plain Chromium build that
+    # Puppeteer and Playwright download does not.
+    codecs = env.get("codecs") or {}
+    if codecs and not codecs.get("h264"):
+        out.append(Signal("environment", "environment.no_proprietary_codecs", 2.2,
+                          "The build cannot play H.264. Chrome ships the licensed codecs. "
+                          "The plain Chromium build that automation downloads does not."))
+    elif codecs.get("h264"):
+        out.append(Signal("environment", "environment.proprietary_codecs_present", -0.6,
+                          "The build plays H.264, as a released Chrome does."))
+
+    if family == "chrome" and env.get("pdf_viewer_enabled") is False:
+        out.append(Signal("environment", "environment.no_pdf_viewer", 1.2,
+                          "navigator.pdfViewerEnabled is false. Desktop Chrome ships the "
+                          "PDF viewer and reports true."))
+
+    if family == "chrome" and env.get("battery_api") is False:
+        out.append(Signal("environment", "environment.no_battery_api", 0.9,
+                          "navigator.getBattery is absent. Desktop Chrome exposes it."))
+
+    ice = env.get("ice_candidate_count")
+    if ice == 0 and env.get("webrtc_supported"):
+        out.append(Signal("environment", "environment.no_ice_candidates", 1.4,
+                          "WebRTC gathering finished with no candidate. The host has no "
+                          "reachable network interface."))
+    elif ice:
+        out.append(Signal("environment", "environment.ice_candidates_present", -0.4,
+                          "WebRTC gathered %d candidates." % ice))
+
+    quota = env.get("storage_quota")
+    if quota is not None and quota == 0:
+        out.append(Signal("environment", "environment.no_storage_quota", 0.7,
+                          "The origin was granted no storage quota."))
+
+    permissions = env.get("permissions") or {}
+    states = set(permissions.values())
+    if len(permissions) >= 3 and states == {"denied"}:
+        out.append(Signal("environment", "environment.all_permissions_denied", 1.0,
+                          "Every queried permission returned denied. A headless profile "
+                          "answers this way."))
+    return out
+
+
 # ------------------------------------------------------------- consistency
 
 def score_consistency(session):
@@ -356,13 +529,13 @@ def score_consistency(session):
                               "The User-Agent claims %s. navigator.platform reports %s."
                               % (claimed_platform, mapped)))
 
-    ch_platform = (headers.get("sec-ch-ua-platform") or "").strip('"').lower()
-    if ch_platform and claimed_platform != "unknown":
-        if ch_platform.replace(" ", "") not in (claimed_platform, "macos" if claimed_platform == "macos" else claimed_platform):
-            if not (ch_platform == "macos" and claimed_platform == "macos"):
-                out.append(Signal("consistency", "consistency.client_hint_mismatch", 2.2,
-                                  "Sec-CH-UA-Platform says %s. The User-Agent says %s."
-                                  % (ch_platform, claimed_platform)))
+    # Chrome sends "macOS", "Windows", "Linux", "Android". Fold the case and the
+    # spaces and the two names meet.
+    ch_platform = (headers.get("sec-ch-ua-platform") or "").strip('"').lower().replace(" ", "")
+    if ch_platform and claimed_platform != "unknown" and ch_platform != claimed_platform:
+        out.append(Signal("consistency", "consistency.client_hint_mismatch", 2.2,
+                          "Sec-CH-UA-Platform says %s. The User-Agent says %s."
+                          % (ch_platform, claimed_platform)))
 
     if claimed_family == "chrome" and tls.get("grease") is False:
         out.append(Signal("consistency", "consistency.chrome_ua_without_grease", 3.0,
@@ -405,6 +578,8 @@ def evaluate(session, calibration=None):
     signals += score_http(session)
     signals += score_browser(session)
     signals += score_worlds(session)
+    signals += score_runtime(session)
+    signals += score_environment(session)
     signals += score_behavior(session)
     signals += score_consistency(session)
 

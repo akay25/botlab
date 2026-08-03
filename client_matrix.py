@@ -1,11 +1,14 @@
-"""Send a set of test clients to the harness and print the result table.
+"""Send a set of non-browser clients to the backend and print the result table.
 
 The matrix shows the central finding. A client can spoof the User-Agent and
 still fail at the TLS layer, because the handshake happens before any header
-arrives. Add a real browser and a stealth browser to the same table by hand.
-Load the test page in each one and give it a run label.
+arrives.
 
-Start the server first. Then run:
+These clients run no JavaScript and load no extension, so they are scored on
+the network, TLS, HTTP and consistency layers alone. Add the browser rows by
+loading the extension in each browser with its own run label.
+
+Start the backend first. Then run:
   python3 client_matrix.py --url https://127.0.0.1:8443
 """
 
@@ -17,6 +20,8 @@ import ssl
 import subprocess
 import sys
 import urllib.request
+
+import scoring
 
 CHROME_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
              "(KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36")
@@ -75,7 +80,7 @@ def row(record):
     result = record.get("result", {})
     tls = record.get("tls") or {}
     layers = result.get("layers", {})
-    hot = [name for name in ("tls", "http", "browser", "behavior", "consistency")
+    hot = [name for name in scoring.LAYERS
            if layers.get(name, {}).get("weight", 0) > 0]
     return {
         "label": record.get("label", ""),
@@ -135,7 +140,8 @@ def main():
 
     print_table(rows)
     print("\nEvery client above spoofs headers only. The TLS layer sees the real client.")
-    print("Load the test page in a real browser and in a stealth browser to complete the matrix.")
+    print("Add the browser rows by loading the extension in a real browser and in a stealth")
+    print("browser, with one run label per client, and sending each report to this backend.")
 
     if args.csv:
         import csv

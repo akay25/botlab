@@ -1,16 +1,20 @@
-"""Run the detection harness.
+"""Run the detection backend for the botlab extension.
 
-The server does four things.
+The extension measures the browser from the inside. It cannot read a TLS
+handshake, because no browser exposes one. This server supplies the two
+layers the extension cannot reach.
 
 1. It reads the raw ClientHello before the TLS library consumes it.
-2. It records the HTTP headers and their order.
-3. It serves a page that collects the browser fingerprint and the telemetry.
-4. It scores each session and writes the result to a log.
+2. It records the source address and the HTTP headers with their order.
+3. It scores the extension report together with those layers.
+4. It writes every session to a log and exports the log as CSV.
 
-Run the server against your own test origin only.
+The server serves no test page. The extension is the only browser-facing
+part of the harness. Run the server against your own test origin only.
 """
 
 import argparse
+import collections
 import csv
 import datetime
 import io
@@ -23,7 +27,6 @@ import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import reference
 import scoring
 import tlsfp
 
@@ -34,10 +37,31 @@ CERT_FILE = os.path.join(DATA_DIR, "harness-cert.pem")
 KEY_FILE = os.path.join(DATA_DIR, "harness-key.pem")
 LOG_FILE = os.path.join(DATA_DIR, "sessions.jsonl")
 
+BACKEND_NOTICE = """botlab backend
+
+This origin serves no test page. It exists so the botlab extension can add the
+two layers a browser cannot measure from the inside: the TLS handshake and the
+source address.
+
+  POST /collect        the extension posts its report here
+  GET  /dashboard      every scored session in one table
+  GET  /api/sessions   the same table as JSON
+  GET  /api/probe      score the caller itself, for non-browser clients
+  GET  /export.csv     every logged session as CSV
+
+Point the extension at this origin in its popup, then accept this certificate
+once by loading /dashboard in the same browser.
+"""
+
 SESSIONS = {}
 SESSION_ORDER = []
-TLS_BY_PEER = {}
 LOCK = threading.Lock()
+
+# Fingerprints wait here between the handshake and the first request on that
+# connection. A peer entry is keyed by (address, port), so a long run would
+# grow the map without a bound. Keep the newest few hundred and drop the rest.
+TLS_BY_PEER = collections.OrderedDict()
+MAX_PENDING_TLS = 400
 
 
 def make_certificate():
@@ -120,6 +144,9 @@ class PeekingServer(ThreadingHTTPServer):
         if fingerprint is not None:
             with LOCK:
                 TLS_BY_PEER[addr] = fingerprint
+                TLS_BY_PEER.move_to_end(addr)
+                while len(TLS_BY_PEER) > MAX_PENDING_TLS:
+                    TLS_BY_PEER.popitem(last=False)
         try:
             wrapped = self.context.wrap_socket(raw, server_side=True)
         except (ssl.SSLError, OSError):
@@ -151,11 +178,39 @@ def new_session(handler):
         "header_order": order,
         "tls": tls,
         "js": None,
+        "runtime": None,
+        "environment": None,
         "behavior": None,
         "extension": None,
-        "source": "page",
+        "source": "probe",
         "label": read_label(handler.path),
     }
+
+
+def adopt_navigation_headers(session, supplied):
+    """Score the http layer on the page navigation, not on the extension POST.
+
+    The extension reports over `fetch`. Those headers belong to a background
+    request, not to a top-level navigation, so their order and their Accept
+    value would fail the http checks for reasons that say nothing about the
+    client. The extension watches the real navigation with chrome.webRequest
+    and sends what it saw. Prefer that. Keep the POST headers beside it,
+    because the connection they arrived on is what carried the TLS handshake.
+    """
+    order = (supplied or {}).get("order") or []
+    if order:
+        session["transport_headers"] = session["headers"]
+        session["transport_header_order"] = session["header_order"]
+        session["headers"] = {str(name).lower(): value for name, value
+                              in ((supplied.get("headers") or {}).items())}
+        session["header_order"] = [str(name).lower() for name in order]
+        session["header_source"] = "navigation"
+    elif session.get("source") == "extension":
+        # Nothing was captured, usually because the tab loaded before the
+        # extension did. Say so rather than score the wrong request.
+        session["header_source"] = "unavailable"
+    else:
+        session["header_source"] = "transport"
 
 
 def store(session):
@@ -185,8 +240,8 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "botlab/1.0"
     protocol_version = "HTTP/1.1"
 
-    def log_message(self, fmt, *args):
-        print("[%s] %s" % (self.client_address[0], fmt % args))
+    def log_message(self, format, *args):
+        print("[%s] %s" % (self.client_address[0], format % args))
 
     def _send(self, code, body, content_type="text/html; charset=utf-8"):
         if isinstance(body, str):
@@ -204,20 +259,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
 
-        if path in ("/", "/index.html"):
-            session = new_session(self)
-            store(session)
-            page = read_static("index.html").decode()
-            page = page.replace("__SESSION_ID__", session["id"])
-            return self._send(200, page)
+        if path == "/":
+            return self._send(200, BACKEND_NOTICE, "text/plain; charset=utf-8")
 
         if path == "/dashboard":
             page = read_static("dashboard.html")
+            if page is None:
+                return self._send(404, "static/dashboard.html is missing.",
+                                  "text/plain; charset=utf-8")
             return self._send(200, page.decode())
-
-        if path == "/collector.js":
-            body = read_static("collector.js")
-            return self._send(200, body, "application/javascript; charset=utf-8")
 
         if path == "/api/sessions":
             with LOCK:
@@ -232,7 +282,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/export.csv":
             return self._send(200, build_csv(), "text/csv; charset=utf-8")
 
-        return self._send(404, "Not found. Open / for the test page.")
+        return self._send(404, "Not found. This origin is the extension backend, not a site.",
+                          "text/plain; charset=utf-8")
 
     def do_OPTIONS(self):
         """Answer the preflight request that the extension sends."""
@@ -255,20 +306,31 @@ class Handler(BaseHTTPRequestHandler):
 
         session = new_session(self)
         session["js"] = payload.get("js")
+        session["runtime"] = payload.get("runtime")
+        session["environment"] = payload.get("environment")
         session["extension"] = payload.get("extension")
-        session["source"] = payload.get("source", "page")
+        session["source"] = payload.get("source", "extension")
         session["behavior"] = payload.get("behavior")
         session["label"] = payload.get("label", "")
-        session["source_page"] = payload.get("session", "")
+        session["page_url"] = payload.get("page_url", "")
+        adopt_navigation_headers(session, payload.get("request"))
         result = store(session)
-        return self._send(200, json.dumps(result), "application/json")
+
+        # Hand back what the extension could not measure for itself, so its
+        # report page can show the handshake beside the score.
+        answer = dict(result)
+        answer["tls"] = session.get("tls")
+        answer["ip"] = session.get("ip")
+        answer["session_id"] = session["id"]
+        answer["header_source"] = session.get("header_source")
+        return self._send(200, json.dumps(answer), "application/json")
 
 
 CSV_COLUMNS = [
     "time", "id", "label", "ip", "score", "verdict", "first_catching_layer",
     "strongest_layer", "total_weight", "ja4", "ja3", "user_agent",
 ] + ["w_" + name for name in scoring.LAYERS] + [
-    "detection_ids", "source", "divergences",
+    "detection_ids", "source", "header_source", "page_url", "divergences",
 ]
 
 
@@ -304,7 +366,9 @@ def build_csv():
                 "ja3": (s.get("tls") or {}).get("ja3", ""),
                 "user_agent": s.get("headers", {}).get("user-agent", ""),
                 "detection_ids": " ".join(ids),
-                "source": s.get("source", "page"),
+                "source": s.get("source", "extension"),
+                "header_source": s.get("header_source", ""),
+                "page_url": s.get("page_url", ""),
                 "divergences": " ".join(
                     d.get("field", "") for d in ((s.get("extension") or {}).get("divergences") or [])),
             }
@@ -315,7 +379,7 @@ def build_csv():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run the bot detection harness.")
+    parser = argparse.ArgumentParser(description="Run the botlab extension backend.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8443)
     parser.add_argument("--no-tls", action="store_true",
@@ -331,9 +395,11 @@ def main():
 
     server = PeekingServer((args.host, args.port), Handler, context)
     scheme = "http" if args.no_tls else "https"
-    print("Test page:  %s://%s:%d/" % (scheme, args.host, args.port))
-    print("Dashboard:  %s://%s:%d/dashboard" % (scheme, args.host, args.port))
-    print("CSV export: %s://%s:%d/export.csv" % (scheme, args.host, args.port))
+    origin = "%s://%s:%d" % (scheme, args.host, args.port)
+    print("Backend:    %s" % origin)
+    print("Dashboard:  %s/dashboard" % origin)
+    print("CSV export: %s/export.csv" % origin)
+    print("Set %s as the harness URL in the extension popup." % origin)
     print("Stop the server with Ctrl+C.")
     try:
         server.serve_forever()

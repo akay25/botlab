@@ -3,7 +3,7 @@
    The service worker observes headers. It does not change them. The extension
    measures the browser. It never modifies a request. */
 
-import { evaluateReport } from "./scorer.js";
+import { evaluateReport, LAYERS } from "./scorer.js";
 
 const REQUESTS = new Map();   /* tab id -> the headers of the last top-level request */
 const RESULTS = new Map();    /* tab id -> the last scored result */
@@ -43,14 +43,19 @@ function paintBadge(tabId, result) {
   chrome.action.setBadgeBackgroundColor({ tabId, color });
 }
 
-/* Send the report to the harness so the server can add the TLS layer. */
-async function forward(report, result, config) {
+/* Send the report to the harness so the server can add the tls and network
+   layers. Every field below is measured. The harness scores a session on
+   what it receives, so a placeholder here would become a false result. */
+async function forward(report, config, request) {
   if (!config.harnessUrl) { return { sent: false, reason: "No harness URL is set." }; }
   const main = report.main_world || {};
   const payload = {
-    reason: "extension",
+    /* The harness must score the page navigation, not this fetch. */
+    request: request ? { url: request.url, order: request.order, headers: request.headers } : null,
+    reason: report.reason || "extension",
     label: config.runLabel,
     source: "extension",
+    page_url: report.url,
     extension: {
       divergences: report.divergences,
       isolated_world: report.isolated_world,
@@ -63,9 +68,9 @@ async function forward(report, result, config) {
         .filter(([, s]) => s === "patched").map(([n]) => n),
       webgl_vendor: main.webgl_vendor,
       webgl_renderer: main.webgl_renderer,
-      canvas_hash: "extension",
-      font_count: 20,
-      permission_mismatch: false,
+      canvas_hash: main.canvas_hash,
+      font_count: main.font_count,
+      permission_mismatch: main.permission_mismatch === true,
       has_chrome_object: main.has_chrome_object,
       plugin_count: main.plugin_count,
       platform: main.platform,
@@ -80,6 +85,8 @@ async function forward(report, result, config) {
       timezone: main.timezone,
       user_agent: main.user_agent
     },
+    runtime: report.runtime || null,
+    environment: report.environment || null,
     behavior: report.behavior
   };
   try {
@@ -104,7 +111,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     (async () => {
       const config = await settings();
       let delivery = { sent: false, reason: "Automatic sending is off." };
-      if (config.autoSend) { delivery = await forward(message.report, result, config); }
+      if (config.autoSend) { delivery = await forward(message.report, config, request); }
       const record = {
         tabId,
         report: message.report,
@@ -118,21 +125,38 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       };
       RESULTS.set(tabId, record);
       paintBadge(tabId, result);
+
+      /* The service worker sleeps and takes RESULTS with it. Keep the last
+         record on disk so the report page still has something to render. */
       const history = (await chrome.storage.local.get("history")).history || [];
       history.unshift({
         time: record.time, url: record.url, label: record.label,
         score: result.score, verdict: result.verdict,
         earliest: result.first_catching_layer,
+        strongest: result.strongest_layer,
+        total_weight: result.total_weight,
+        harness_score: delivery.sent ? delivery.serverScore : "",
+        detection_ids: LAYERS.flatMap((n) => (result.layers[n] || {}).ids || []).join(" "),
         divergences: (message.report.divergences || []).map((d) => d.field).join(" ")
       });
-      await chrome.storage.local.set({ history: history.slice(0, 300) });
+      await chrome.storage.local.set({
+        history: history.slice(0, 300),
+        lastRecord: record
+      });
       reply({ ok: true, score: result.score });
     })();
     return true;
   }
 
   if (message && message.type === "botlab-get-result") {
-    reply(RESULTS.get(message.tabId) || null);
+    (async () => {
+      const live = RESULTS.get(message.tabId);
+      if (live) { reply(live); return; }
+      /* The worker may have restarted since the report arrived. */
+      const stored = (await chrome.storage.local.get("lastRecord")).lastRecord || null;
+      reply(stored && (message.tabId === undefined || stored.tabId === message.tabId)
+        ? stored : null);
+    })();
     return true;
   }
 
@@ -141,7 +165,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       const config = await settings();
       const record = RESULTS.get(message.tabId);
       if (!record) { reply({ sent: false, reason: "No report exists for this tab." }); return; }
-      const delivery = await forward(record.report, record.result, config);
+      const delivery = await forward(record.report, config, record.request);
+      record.delivery = delivery;
+      RESULTS.set(message.tabId, record);
+      await chrome.storage.local.set({ lastRecord: record });
       reply(delivery);
     })();
     return true;

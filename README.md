@@ -1,129 +1,98 @@
-# botlab — a bot detection harness
+# botlab — a bot detection instrument
 
-botlab is a measurement instrument for research on anti-bot systems. It runs a
-test origin that you control. The origin inspects each client at six layers and
-reports which layer identified the client.
+botlab is a Chrome extension that measures the browser it runs in. Load it in a
+normal Chrome and it reports a clean browser. Load it inside an automated Chrome
+and it reports which layer identified the automation, with the evidence behind
+the verdict.
 
 botlab detects automation. It does not evade detection. The code contains no
 evasion tool.
 
-## Scope
+## Shape
 
-Run botlab against your own test origin only. Do not point the harness or any
-test client at a third-party website. The legal exposure in this field comes
-from the defeat of an access control, not from the collection of public data.
-A local origin removes that exposure.
+The extension is the instrument. It scores seven layers from inside the browser
+and flags the instance with a full report.
 
-## Requirements
+A small Python backend is optional. It exists for the two layers no browser API
+can reach: the TLS handshake and the source address. It serves no test page.
 
-- Python 3.10 or later.
-- The `cryptography` package. The server uses it to make a self-signed
-  certificate.
+```
+   Chrome (real, headless, or patched)
+   ├── main world  ─┐
+   ├── isolated    ─┼─→ extension scores 7 layers ─→ badge, popup, full report
+   └── webRequest  ─┘                   │
+                                        └─ optional POST ─→ backend adds tls + network
+```
+
+## Run the extension alone
+
+1. Open `chrome://extensions` in Chrome 111 or later.
+2. Turn on **Developer mode**.
+3. Press **Load unpacked** and choose the `extension` folder.
+4. Open any page. The badge on the icon shows the score for that tab.
+5. Press the icon, then **Open full report** for the evidence.
+
+That is the whole instrument. Nothing is sent anywhere until you set a harness
+URL yourself.
+
+## Add the backend for the TLS and network layers
 
 ```
 pip install cryptography
+python3 server.py --host 127.0.0.1 --port 8443
 ```
 
-## Start the harness
+Then in the extension popup, set the harness URL to `https://127.0.0.1:8443`,
+type a run label, and turn on **Send every report to the harness**. Load
+`https://127.0.0.1:8443/dashboard` once in the same browser and accept the
+self-signed certificate, otherwise the extension cannot reach it.
 
-1. Start the server.
-   ```
-   python3 server.py --host 127.0.0.1 --port 8443
-   ```
-2. Open `https://127.0.0.1:8443/` in the client you want to measure.
-3. Accept the self-signed certificate warning.
-4. Move the pointer across the interaction area. Click it. Type a few keys.
-5. Read the score, the layer ladder, and the signal list.
+The popup then shows two scores. The local score comes from seven layers. The
+harness score adds the TLS layer and the network layer to the same report.
 
-Open `https://127.0.0.1:8443/dashboard` to see every session in one table.
-Open `https://127.0.0.1:8443/export.csv` to download the data for analysis.
+`--no-tls` serves plain HTTP for debugging. The TLS layer reports no data in
+that mode.
 
-Add `--no-tls` to serve plain HTTP. In this mode the TLS layer reports no data.
-Use this mode only to debug the page.
+## The nine layers
 
-## Run the client matrix
+| Layer | Measured by | What it reads | Example signal |
+|---|---|---|---|
+| network | backend | The source address | Reputation of the address range |
+| tls | backend | The raw ClientHello | The client sends no GREASE value |
+| http | extension | The real navigation headers and their order | The header order does not match Chrome |
+| browser | extension | The main-world fingerprint | The WebGL renderer is a software rasterizer |
+| worlds | extension | The two JavaScript worlds | The page and the browser disagree on `navigator.webdriver` |
+| runtime | extension | How the engine behaves | A CDP client is attached; `Error.prepareStackTrace` is set |
+| environment | extension | What the machine actually has | No camera, no voices, no licensed H.264 |
+| behavior | extension | Pointer path, key timing, `isTrusted` | The pointer path is a straight line |
+| consistency | extension | Every claim against every other | The User-Agent and `navigator.platform` disagree |
 
-The matrix sends a set of non-browser clients to the harness. It then prints the
-result table.
+The order is the order a production stack meets a client, so the first layer
+with a positive signal is the layer that would have caught it. The report names
+that layer.
 
-```
-python3 client_matrix.py --url https://127.0.0.1:8443 --csv results.csv
-```
+The `worlds` layer is the one only an extension can measure, and it is usually
+the strongest. The `runtime` and `environment` layers exist because `worlds`
+has a blind spot: a browser patched at the source changes both worlds at once.
+They read how the engine behaves and what hardware backs it, which a property
+rewrite does not change.
 
-The table shows the central result. A client can copy the User-Agent of Chrome
-and copy every Chrome header in the correct order. The TLS layer still
-identifies it, because the handshake completes before the first header arrives.
+## Why the extension forwards its own header capture
 
-Add a real browser and a stealth browser to the same table by hand. Load the
-test page in each one. Type a run label in the label field. Press "Send a new
-report".
-
-## Calibrate before you report a result
-
-The reference table starts almost empty. A JA4 hash changes with every browser
-release, so a table copied from an article is not evidence.
-
-1. Load the test page in the client you want to record.
-2. Record the fingerprint with the correct class and label.
-   ```
-   python3 calibrate.py --class human --label "chrome-141-macos"
-   python3 calibrate.py --class automation --label "playwright-chromium-1.49"
-   ```
-3. Print the table at any time.
-   ```
-   python3 calibrate.py --list --class human --label x
-   ```
-
-The structural rules work without calibration. GREASE, ALPN, header order, and
-the browser checks need no table.
-
-## The Chrome extension
-
-The `extension/` folder holds a Manifest V3 probe. Load it in Chrome, or load it
-inside an automated Chrome, and it reports what the automation changed.
-
-The probe compares the main world with the isolated world. A stealth patch
-reaches the main world only, so any field that differs proves a patch. See
-`extension/README.md`.
-
-## The seven layers
-
-| Layer | What it reads | Example signal |
-|---|---|---|
-| network | The source address | Reputation of the address range |
-| tls | The raw ClientHello | The client sends no GREASE value |
-| http | The headers and their order | The header order does not match Chrome |
-| browser | The report from the page | The WebGL renderer is a software rasterizer |
-| worlds | The two JavaScript worlds | The page and the browser disagree on `navigator.webdriver` |
-| behavior | The pointer and key timing | The pointer path is a straight line |
-| consistency | Every layer together | The User-Agent and navigator.platform disagree |
-
-The consistency layer carries the heaviest weights. A stealth client can pass
-one layer. It fails when two layers tell different stories about one machine.
-This result is the main argument that the harness supports.
-
-## How the TLS fingerprint works
-
-The server does not use a normal HTTPS listener. It accepts the raw socket
-first. It then reads the ClientHello bytes with a peek operation, which leaves
-the bytes in the buffer. The TLS library reads the same bytes afterward and the
-handshake completes as usual.
-
-`tlsfp.py` parses the record and computes three values.
-
-- **JA3** is the older MD5 hash of the version, ciphers, extensions, curves, and
-  point formats.
-- **JA4** is the current format. It resists extension permutation and adds the
-  ALPN value and the signature algorithms.
-- **JA4_r** keeps the readable field list. Cite this value in a paper, because a
-  reader can check it.
+The extension reports to the backend over `fetch`. Those are background-request
+headers, not navigation headers, so scoring them would fail the http checks for
+reasons that say nothing about the client. The extension watches the real
+top-level navigation with `chrome.webRequest` and sends what it saw. The
+backend scores that and records the POST headers separately, because the
+connection they arrived on is what carried the handshake. The `header_source`
+column in the export says which request was scored.
 
 ## Score
 
-The engine adds the weight of every signal. It maps the total through a logistic
-function to a score from 1 to 99. A low score means the client is probably
-automated. This range copies the convention that commercial systems use, so your
-results map onto their published thresholds.
+The engine adds the weight of every signal and maps the total through a
+logistic function to a score from 1 to 99. A low score means the client is
+probably automated. This range copies the convention that commercial systems
+use, so results map onto their published thresholds.
 
 | Score | Verdict |
 |---|---|
@@ -132,39 +101,101 @@ results map onto their published thresholds.
 | 31 to 60 | unclear |
 | 61 to 99 | likely human |
 
-Each signal carries a detection ID such as `tls.no_grease`. Report the detection
-IDs, not only the score. The IDs show a reader what the harness measured.
+Each signal carries a detection ID such as `runtime.cdp_attached`. Report the
+detection IDs, not only the score. The IDs name what the instrument measured;
+a score is one number a reader cannot check.
+
+## Calibrate before you report a result
+
+The reference table starts almost empty. A JA4 hash changes with every browser
+release, so a table copied from an article is not evidence.
+
+1. Send a report from the client you want to record, with a run label.
+2. File the fingerprint.
+   ```
+   python3 calibrate.py --class human --label "chrome-141-macos"
+   python3 calibrate.py --class automation --label "playwright-chromium-1.49"
+   ```
+3. Print the table at any time with `--list`.
+
+The structural rules work without calibration. GREASE, ALPN, header order, the
+runtime probes, and the environment probes need no table.
+
+## Compare against non-browser clients
+
+The matrix sends a set of non-browser clients to the backend and prints the
+result table.
+
+```
+python3 client_matrix.py --url https://127.0.0.1:8443 --csv results.csv
+```
+
+A client can copy the User-Agent of Chrome and every Chrome header in the
+correct order. The TLS layer still identifies it, because the handshake
+completes before the first header arrives. Add browser rows to the same table
+by running the extension with a run label per client.
+
+## Export
+
+| Source | Holds |
+|---|---|
+| Report page, **Download JSON** | The whole record: both world snapshots, every probe, every signal |
+| Report page, **Download CSV row** | One row in the same columns as the harness export |
+| Popup, **Export history CSV** | One row per report in this browser |
+| `https://host:port/export.csv` | Every session the backend logged, with the TLS columns |
+
+Join the extension export and the harness export on the run label.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `server.py` | The listener, the routes, the session store, and the CSV export |
+| `extension/manifest.json` | MV3 manifest, two content scripts in two worlds |
+| `extension/main-world.js` | The main-world snapshot and the runtime and environment probes |
+| `extension/content.js` | The isolated-world snapshot, the world diff, the behaviour telemetry |
+| `extension/scorer.js` | The seven in-browser layers and the score |
+| `extension/background.js` | Header capture, scoring, badge, history, harness delivery |
+| `extension/popup.html`, `popup.js` | The verdict and the settings |
+| `extension/report.html`, `report.js` | The full report and the exports |
+| `server.py` | The listener, the routes, the session store, the CSV export |
 | `tlsfp.py` | The ClientHello parser and the JA3 and JA4 functions |
 | `scoring.py` | The signal registry, the layer weights, and the score |
-| `reference.py` | The header orders, the marker lists, and the calibration file |
+| `reference.py` | The header orders, the marker lists, the calibration file |
 | `calibrate.py` | The tool that files a measured fingerprint |
-| `client_matrix.py` | The comparison run across several clients |
-| `static/collector.js` | The page script that reports the fingerprint and telemetry |
-| `static/index.html` | The test page and the layer ladder |
-| `static/dashboard.html` | The session table |
-| `extension/` | The Chrome probe and its own scorer |
+| `client_matrix.py` | The comparison run across non-browser clients |
+| `static/dashboard.html` | The session table the backend serves |
+
+## Scope
+
+Run botlab against your own test origin only. Do not point the backend or any
+test client at a third-party website. The legal exposure in this field comes
+from the defeat of an access control, not from the collection of public data.
+A local origin removes that exposure.
 
 ## Limits
 
-State these limits in the thesis. They set the boundary of the claim.
+State these limits in any writeup. They set the boundary of the claim.
 
-1. The server speaks HTTP/1.1. It does not compute an HTTP/2 frame
-   fingerprint. Add an HTTP/2 layer if the thesis needs one.
-2. The network layer has no address reputation feed. A production system buys
-   one. The harness records the address only.
-3. The weights are hand-set, not learned. A production system trains a model on
-   a large traffic sample. Report the weights as a transparent baseline.
-4. The behavior layer reads one page view. A production system builds a profile
-   across a session and across days.
+1. A page cannot install the probe. This is a laboratory instrument, not a
+   production detector.
+2. The `worlds` layer finds a patch applied through the automation control
+   channel. It does not find a patch compiled into the browser. An anti-detect
+   browser that changes the source patches both worlds at once. This is a
+   finding, not a weakness: it marks the boundary between a scripted stealth
+   plugin and a rebuilt browser, and it explains why the second class costs so
+   much more to produce.
+3. `runtime.cdp_attached` names a debugger, not an automation tool alone. An
+   open DevTools window trips it the same way. Record whether one was open.
+4. The backend speaks HTTP/1.1 and computes no HTTP/2 frame fingerprint.
+5. The network layer has no address reputation feed. It records the address.
+6. The weights are hand-set, not learned. Report them as a transparent
+   baseline.
+7. The behaviour layer reads one page view, not a profile across a session.
 
-## Extend the harness
+## Extend the instrument
 
-Add a signal in one place. Write a function in `scoring.py` that returns a list
-of `Signal` objects. Give each signal a layer, a detection ID, a weight, and a
-sentence that explains the evidence. Then call the function from `evaluate`.
+Add a signal in one place. Write a function in `extension/scorer.js` that
+returns signal objects, give each one a layer, a detection ID, a weight, and a
+sentence that explains the evidence, then call it from `evaluateReport`. Mirror
+it in `scoring.py` if the backend should score it too. Keep the detection IDs
+and the weights identical across the two, because a run may be scored by either.

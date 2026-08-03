@@ -113,6 +113,13 @@ $("auto").addEventListener("change", (e) => {
   chrome.storage.local.set({ autoSend: e.target.checked });
 });
 
+$("report").addEventListener("click", async () => {
+  const tab = await activeTab();
+  const target = tab ? `report.html?tab=${tab.id}` : "report.html";
+  await chrome.tabs.create({ url: chrome.runtime.getURL(target) });
+  window.close();
+});
+
 $("measure").addEventListener("click", async () => {
   const tab = await activeTab();
   chrome.tabs.sendMessage(tab.id, { type: "botlab-collect-now" }, () => {

@@ -41,15 +41,16 @@
 <div class="wrap">
 <header>
   <h1>botlab &middot; sessions</h1>
-  <p class="sub">Each row is one scored session. The earliest column names the first layer in the stack that flagged the client. Reload a client with a run label to build a comparison matrix.</p>
+  <p class="sub">Each row is one scored session. The earliest column names the first layer in the stack that flagged the client. Give each client its own run label to build a comparison matrix.</p>
   <div class="block">
     <span>rows <b id="count">0</b></span>
     <span>refresh <b>3 s</b></span>
-    <span><a href="/">test page</a></span>
+    <span><a href="/">backend</a></span>
     <span><a href="/export.csv">export.csv</a></span>
   </div>
 </header>
-<div id="host"><div class="empty">No session has arrived yet. Open the test page in a client.</div></div>
+<div id="host"><div class="empty">No session has arrived yet. Point the extension at this
+backend, or run client_matrix.py against it.</div></div>
 </div>
 <script>
 function colorFor(score) {
