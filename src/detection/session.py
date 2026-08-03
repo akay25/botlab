@@ -20,9 +20,16 @@ def new_session(
     path: str = "",
     tls: Optional[dict] = None,
     session_id: Optional[str] = None,
+    tls_measured: bool = True,
 ) -> Dict[str, Any]:
-    """Build a session from one connection and its request headers."""
+    """Build a session from one connection and its request headers.
+
+    `tls_measured` records whether the harness was in a position to observe a
+    handshake at all, so a missing fingerprint is not mistaken for a client
+    that sent none.
+    """
     return {
+        "tls_measured": tls_measured,
         "id": session_id or generate_token(),
         "time": datetime.datetime.now().isoformat(timespec="seconds"),
         "ip": client_ip,

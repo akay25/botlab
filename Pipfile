@@ -15,6 +15,13 @@ cryptography = "*"
 playwright = "*"
 selenium = "*"
 
+[scripts]
+start = "python -m src"
+matrix = "python tools/client_matrix.py"
+calibrate = "python tools/calibrate.py"
+naive = "python examples/playwright_naive.py"
+human = "python examples/playwright_human.py"
+
 [requires]
 python_version = "3.14"
 python_full_version = "3.14.0"

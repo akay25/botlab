@@ -43,6 +43,18 @@ def register(port: int, fingerprint: Optional[dict], client_ip: str) -> None:
         _BY_UPSTREAM_PORT.popitem(last=False)
 
 
+def unregister(port: int) -> None:
+    """Forget a connection as soon as it closes.
+
+    The entry must not outlive the connection it describes. The operating
+    system hands out ephemeral ports in sequence and recycles them quickly, so
+    a stale entry would eventually be found by an unrelated connection and
+    hand it someone else's handshake. While the connection is open its port is
+    exclusively its own, which makes the lookup exact.
+    """
+    _BY_UPSTREAM_PORT.pop(port, None)
+
+
 def lookup(port: Optional[int]) -> Dict[str, Any]:
     """Return the handshake and the real address behind an upstream port."""
     if port is None:
@@ -90,6 +102,7 @@ def make_handler(upstream_host: str, upstream_port: int):
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername") or ("", 0)
         upstream_writer = None
+        local_port = None
         try:
             consumed, fingerprint = await asyncio.wait_for(
                 _read_client_hello(reader), timeout=PEEK_TIMEOUT_SECONDS)
@@ -114,6 +127,8 @@ def make_handler(upstream_host: str, upstream_port: int):
             logger.warning("Could not reach uvicorn at %s:%s (%s)",
                            upstream_host, upstream_port, error)
         finally:
+            if local_port is not None:
+                unregister(local_port)
             for stream in (writer, upstream_writer):
                 if stream is not None:
                     try:

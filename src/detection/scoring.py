@@ -55,7 +55,19 @@ def score_tls(session, calibration):
     out = []
     tls = session.get("tls")
     if not tls:
-        out.append(Signal("tls", "tls.absent", 1.0, "The harness read no ClientHello."))
+        # Distinguish "this client sent no ClientHello" from "the harness was
+        # not in a position to see one". The first is evidence about the
+        # client. The second is a fact about the harness, and charging the
+        # client for it would corrupt every run made through a plain-HTTP
+        # harness or straight to the upstream port behind the front end.
+        if not session.get("tls_measured", True):
+            out.append(Signal("tls", "tls.not_measured", 0.0,
+                              "The harness did not observe a handshake for this request, so "
+                              "the tls layer says nothing. Either it is serving plain HTTP, "
+                              "or the request reached the upstream port directly instead of "
+                              "the ClientHello-reading front end."))
+        else:
+            out.append(Signal("tls", "tls.absent", 1.0, "The harness read no ClientHello."))
         return out
 
     if not tls.get("grease"):

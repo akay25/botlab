@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, Response, status
 
 from src.detection import session as session_service
 from src.loaders import storage
+from src.loaders.config import config
 from src.loaders.logging import get_logger
 from src.loaders.tls_proxy import lookup
 from src.utils import make_response
@@ -60,6 +61,7 @@ async def probe(request: Request, response: Response, label: str = ""):
         header_order=[name for name, _ in request.headers.items()],
         path=str(request.url.path),
         tls=handshake.get("tls"),
+        tls_measured=config.TLS_ENABLED and bool(handshake),
     )
     current["label"] = label[:60]
     current["source"] = "probe"

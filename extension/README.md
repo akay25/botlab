@@ -146,7 +146,7 @@ backend it is nine.
 
 1. Start the backend.
    ```
-   python -m src
+   pipenv run start
    ```
 2. Open the popup. Type `https://127.0.0.1:8443` in the harness field.
 3. Type a run label, such as `chrome-141-stealth`.

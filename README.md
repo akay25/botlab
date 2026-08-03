@@ -31,9 +31,12 @@ against one signal registry.
 
 ## Install
 
+Python 3.14, per the `Pipfile`. `Pipfile.lock` is committed, so an install
+resolves to the versions the measurements below were taken with.
+
 ```
-pipenv install --dev && pipenv shell
 cp example.env .env
+pipenv install --dev
 ```
 
 Or without pipenv:
@@ -44,22 +47,40 @@ pip install fastapi uvicorn pydantic-settings python-json-logger cryptography
 cp example.env .env
 ```
 
+The `--dev` group holds Playwright and Selenium, which only the scripts in
+`examples/` need. Leave it out to run the harness alone.
+
+Every `pipenv run <name>` below is a shortcut defined in the `Pipfile`. Without
+pipenv, run the underlying command instead: `pipenv run start` is
+`python -m src`, `pipenv run naive` is `python examples/playwright_naive.py`,
+and so on.
+
 ## Run an automation tool against the task page
 
 ```
-python -m src
+pipenv run start
 ```
 
 Then point a tool at it. Ready-to-run examples live in `examples/`:
 
 ```
-python examples/playwright_naive.py --url https://127.0.0.1:8443
-python examples/playwright_human.py --url https://127.0.0.1:8443 --seed 7
-python examples/selenium_naive.py  --url https://127.0.0.1:8443
+pipenv run naive  --url https://127.0.0.1:8443
+pipenv run human  --url https://127.0.0.1:8443 --seed 7
+python examples/selenium_naive.py --url https://127.0.0.1:8443
 ```
 
 Each prints the score and a report URL. Open the URL for the evidence, or open
 `/dashboard` to compare runs.
+
+The `Pipfile` defines these shortcuts:
+
+| Command | Runs |
+|---|---|
+| `pipenv run start` | The harness |
+| `pipenv run naive` | `examples/playwright_naive.py` |
+| `pipenv run human` | `examples/playwright_human.py` |
+| `pipenv run matrix` | `tools/client_matrix.py` |
+| `pipenv run calibrate` | `tools/calibrate.py` |
 
 The page uses stable selectors — `#field-name`, `#field-email`, `#target-1`
 through `#target-3`, `#slider` — so every tool performs the identical task and
@@ -110,7 +131,7 @@ URL yourself.
 ## Add the backend for the TLS and network layers
 
 ```
-python -m src
+pipenv run start
 ```
 
 Then in the extension popup, set the harness URL to `https://127.0.0.1:8443`,
@@ -137,12 +158,29 @@ front end never holds the key and never decrypts anything, and uvicorn
 completes the handshake exactly as it would have.
 
 A request finds its own handshake again by the source port of the upstream
-connection, which is unique per client connection and stable across keep-alive
-requests on it. The real client address travels the same way, because uvicorn
-sees only the front end.
+connection. That entry is dropped the moment the connection closes: while a
+connection is open its port is exclusively its own, which makes the lookup
+exact, but the operating system hands out ephemeral ports in sequence and
+recycles them quickly, so an entry that outlived its connection would
+eventually be found by an unrelated one and handed someone else's handshake.
+The real client address travels the same way, because uvicorn sees only the
+front end.
 
-This is why two ports are involved. Clients talk to `APP_PORT`; uvicorn
-listens on `APP_PORT + 1`, or on `TLS_UPSTREAM_PORT` if you set one.
+### Two ports, and only one of them is yours
+
+Clients talk to `APP_PORT`. uvicorn listens on `APP_PORT + 1`, or on
+`TLS_UPSTREAM_PORT` if you set one.
+
+**Send nothing to the upstream port.** It answers, because it is a complete
+HTTPS server, but the request never passes the front end and no handshake is
+read. The harness says so rather than pretending: a run made that way carries
+`tls.not_measured` at weight 0, not `tls.absent` at weight 1. The difference
+matters. `tls.absent` is a claim about the client — it sent no ClientHello.
+`tls.not_measured` is a fact about the harness — it was not in a position to
+look. Charging a client for the second would quietly corrupt every run made
+through a misconfigured harness.
+
+The same signal appears when `TLS_ENABLED=false`, for the same reason.
 
 ## The nine layers
 
@@ -204,10 +242,13 @@ release, so a table copied from an article is not evidence.
 1. Send a report from the client you want to record, with a run label.
 2. File the fingerprint.
    ```
-   python tools/calibrate.py --class human --label "chrome-141-macos"
-   python tools/calibrate.py --class automation --label "playwright-chromium-1.49"
+   pipenv run calibrate --class human --label "chrome-141-macos"
+   pipenv run calibrate --class automation --label "playwright-chromium-148"
    ```
 3. Print the table at any time with `--list`.
+
+Pass `--match-label` to pick a specific run. Without it the tool files the
+newest session that carried a handshake, which may not be the one you meant.
 
 The structural rules work without calibration. GREASE, ALPN, header order, the
 runtime probes, and the environment probes need no table.
@@ -218,7 +259,7 @@ The matrix sends a set of non-browser clients to the backend and prints the
 result table.
 
 ```
-python tools/client_matrix.py --url https://127.0.0.1:8443 --csv results.csv
+pipenv run matrix --url https://127.0.0.1:8443 --csv results.csv
 ```
 
 A client can copy the User-Agent of Chrome and every Chrome header in the
@@ -236,6 +277,26 @@ by running the extension with a run label per client.
 | `https://host:port/api/export.csv` | Every session the backend logged, with the TLS columns |
 
 Join the extension export and the harness export on the run label.
+
+## Configuration
+
+Settings come from `.env`, read by pydantic-settings in
+`src/loaders/config.py`. Copy `example.env` to start.
+
+| Variable | Default | Role |
+|---|---|---|
+| `APP_HOST` | `127.0.0.1` | The address to bind. Keep it local |
+| `APP_PORT` | `8443` | The port clients talk to |
+| `TLS_ENABLED` | `true` | Off serves plain HTTP and leaves the tls layer unmeasured |
+| `TLS_UPSTREAM_PORT` | `0` | uvicorn's port; `0` means `APP_PORT + 1` |
+| `LOG_LEVEL` | `INFO` | JSON logs on stdout |
+| `ALLOWED_HOSTS` | `*` | CORS origins, comma separated |
+| `SESSION_CACHE_SIZE` | `500` | Runs kept in memory for the dashboard |
+| `DATA_DIR` | `./data` | Run log, certificate, calibration table |
+
+`pipenv run` loads `.env` itself, and what it loads wins over what is already
+in your shell. `APP_PORT=9000 pipenv run start` does **not** move the port —
+edit `.env` instead. Without pipenv, the shell wins as usual.
 
 ## Layout
 
@@ -322,17 +383,29 @@ State these limits in any writeup. They set the boundary of the claim.
    baseline.
 7. The behaviour layer reads one page view, not a profile across a session.
 8. **The behavioural thresholds have no human control group behind them.** The
-   key-dwell range in `src/detection/behavior.py` comes from published keystroke-dynamics
-   work, not from runs against this harness, and the pointer thresholds are
-   reasoned rather than measured. Before reporting a false-positive rate, run
-   the task page yourself thirty times by hand, look at the distributions in
-   the reports, and set the constants at the top of `src/detection/behavior.py` from your own
-   data. Every threshold is a named constant for exactly this reason.
+   key-dwell range in `src/detection/behavior.py` comes from published
+   keystroke-dynamics work, not from runs against this harness, and the
+   pointer thresholds are reasoned rather than measured. Before reporting a
+   false-positive rate, run the task page yourself thirty times by hand, look
+   at the distributions in the reports, and set the constants at the top of
+   that file from your own data. Every threshold is a named constant for
+   exactly this reason.
+9. `examples/selenium_naive.py` has never been run. Playwright drives the
+   verified path; the Selenium script is written against the documented API
+   but was not executed, because chromedriver was not available here.
 
 ## Extend the instrument
 
-Add a signal in one place. Write a function in `extension/scorer.js` that
-returns signal objects, give each one a layer, a detection ID, a weight, and a
-sentence that explains the evidence, then call it from `evaluateReport`. Mirror
-it in `src/detection/scoring.py` if the backend should score it too. Keep the detection IDs
-and the weights identical across the two, because a run may be scored by either.
+Add a signal in one place. Write a function in `src/detection/scoring.py` that
+returns `Signal` objects, give each one a layer, a detection ID, a weight, and
+a sentence that explains the evidence, then call it from `evaluate`. Mirror it
+in `extension/scorer.js` if the extension should score it too.
+
+Keep the detection IDs and the weights identical across the two, because a run
+may be scored by either. A new layer needs its name adding to `LAYERS` in
+`src/constants.py`, in the position a production stack would meet it, and to
+the matching list in `extension/scorer.js`.
+
+Behavioural thresholds belong at the top of `src/detection/behavior.py` as
+named constants, never inline, so a reader can see what was assumed and change
+it.
