@@ -21,12 +21,12 @@ router = APIRouter(
 async def collect(body: CollectPayload, request: Request, response: Response):
     """Score one report and store it.
 
-    Two kinds of client post here. The task page sends the run token it was
-    served, along with the raw interaction telemetry. The extension sends the
-    navigation it captured, along with its two world snapshots. Both are
-    scored by the same registry; the layers each one can reach differ.
+    The task page posts the run token it was served along with the raw
+    interaction telemetry. The token is what ties the report back to the
+    navigation that served the page, which is the request worth scoring on
+    the http layer.
 
-    The reply carries the score and the two things the client cannot measure
+    The reply carries the score and the two things the page cannot measure
     for itself: the TLS handshake and the address it came from.
     """
     peer = request.client
@@ -43,8 +43,7 @@ async def collect(body: CollectPayload, request: Request, response: Response):
     session_service.apply_payload(current, body)
 
     visit = storage.take_visit(body.session) if body.session else None
-    if not session_service.adopt_page_visit(current, visit, body.session):
-        session_service.adopt_captured_request(current, body.request)
+    session_service.adopt_page_visit(current, visit, body.session)
 
     result = session_service.score(current)
     storage.save(current)

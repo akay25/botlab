@@ -41,10 +41,6 @@ def _row(record):
         "source": record.get("source", ""),
         "header_source": record.get("header_source", ""),
         "page_url": record.get("page_url", ""),
-        "divergences": " ".join(
-            d.get("field", "")
-            for d in ((record.get("extension") or {}).get("divergences") or [])
-        ),
     }
     for layer in LAYERS:
         row["w_" + layer] = (layers.get(layer) or {}).get("weight", 0)

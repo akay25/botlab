@@ -1,32 +1,22 @@
 # botlab — a bot detection instrument
 
-botlab identifies automated browsers and reports which layer identified them,
-with the evidence behind the verdict.
+botlab is a test origin that automation tools visit. It gives each visitor
+three tasks to perform, watches how they were performed, and reports which
+detection layer identified the visitor first, with the evidence behind the
+verdict.
 
 botlab detects automation. It does not evade detection. The code contains no
 evasion tool.
 
-## Two ways in
+## How it works
 
-**The task page.** Point Selenium, Playwright, or any other tool at
-`https://127.0.0.1:8443/`. It performs three tasks — type into two fields,
-click three targets, drag a slider — and the harness reports whether a hand or
-a script did them. This is the path to use when the thing under test is an
-automation tool.
-
-**The extension.** Load `extension/` into a browser and it measures that
-browser from the inside, on any page. This is the path to use when the thing
-under test is a browser build: a stealth-patched Chrome, an anti-detect
-product, a headless variant.
-
-Both post to the same Python backend, which adds the two layers no browser API
-can reach — the TLS handshake and the source address — and scores everything
-against one signal registry.
+Point Selenium, Playwright, or any other tool at `https://127.0.0.1:8443/`.
+The page asks it to type into two fields, click three targets, and drag a
+slider. Every pointer and key event is recorded raw and posted back. The
+harness scores eight layers and returns a verdict the script can read.
 
 ```
-  automation tool ──→ task page ──┐
-                                  ├──→ backend: 9 layers ──→ report, dashboard, CSV
-  browser under test ─→ extension ┘
+  automation tool ──→ task page ──→ eight layers ──→ report, dashboard, CSV
 ```
 
 ## Install
@@ -55,7 +45,7 @@ pipenv, run the underlying command instead: `pipenv run start` is
 `python -m src`, `pipenv run naive` is `python examples/playwright_naive.py`,
 and so on.
 
-## Run an automation tool against the task page
+## Run
 
 ```
 pipenv run start
@@ -72,8 +62,6 @@ python examples/selenium_naive.py --url https://127.0.0.1:8443
 Each prints the score and a report URL. Open the URL for the evidence, or open
 `/dashboard` to compare runs.
 
-The `Pipfile` defines these shortcuts:
-
 | Command | Runs |
 |---|---|
 | `pipenv run start` | The harness |
@@ -82,19 +70,52 @@ The `Pipfile` defines these shortcuts:
 | `pipenv run matrix` | `tools/client_matrix.py` |
 | `pipenv run calibrate` | `tools/calibrate.py` |
 
-The page uses stable selectors — `#field-name`, `#field-email`, `#target-1`
-through `#target-3`, `#slider` — so every tool performs the identical task and
-the reports compare like for like. Pass `?label=` to name a run.
+## Driving the page
 
-A script can read its own verdict:
+Selectors are stable, so every tool performs the identical task and the reports
+compare like for like: `#field-name`, `#field-email`, `#target-1` through
+`#target-3`, `#slider`, `#submit-run`.
+
+```js
+window.botlab.sessionId   // the run id, also the report URL
+window.botlab.tasks()     // {typing, targets, drag, ready, submitted}
+window.botlab.finish()    // returns a promise of the scored result
+window.botlab.result      // the same result once it has arrived
+```
+
+A script can read its own verdict and fail a build on it:
 
 ```python
 result = page.evaluate("window.botlab.finish()")
-assert result["score"] < 30
+assert result["score"] < 30, result["first_catching_layer"]
 ```
 
 If a script never calls `finish()`, the page sends itself once the required
-tasks are done and it has been quiet for 1.5 seconds. See `examples/README.md`.
+tasks are done and it has been quiet for 1.5 seconds, so a tool that knows
+nothing about the API still produces a report. Pass `?label=` to name a run;
+`/api/export.csv` groups by it.
+
+## The eight layers
+
+| Layer | What it reads | Example signal |
+|---|---|---|
+| network | The source address | Reputation of the address range |
+| tls | The raw ClientHello | The client sends no GREASE value |
+| http | The navigation headers and their order | The header order does not match Chrome |
+| browser | The page-visible fingerprint | The WebGL renderer is a software rasterizer |
+| runtime | How the engine behaves | A CDP client is attached; `Error.prepareStackTrace` is set |
+| environment | What the machine actually has | No camera, no voices, no licensed H.264 |
+| behavior | Pointer kinematics and keystroke dynamics | Keys were held for 3 ms; the pointer was placed, not moved |
+| consistency | Every claim against every other | The User-Agent and `navigator.platform` disagree |
+
+The order is the order a production stack meets a client, so the first layer
+with a positive signal is the layer that would have caught it. The report names
+that layer.
+
+`runtime` and `environment` matter most against a tool that has been taught to
+lie. A stealth patch rewrites what the browser says about itself, but it does
+not change how the engine behaves under a debugger, and it does not install a
+camera, a voice pack, or a licensed H.264 decoder.
 
 ### What the behaviour layer reads
 
@@ -117,33 +138,23 @@ Movements are judged one at a time. A path that visits three targets in three
 corners is bent by the task, not by a hand, so a whole-session straightness
 ratio says nothing.
 
-## Run the extension alone
+## Score
 
-1. Open `chrome://extensions` in Chrome 111 or later.
-2. Turn on **Developer mode**.
-3. Press **Load unpacked** and choose the `extension` folder.
-4. Open any page. The badge on the icon shows the score for that tab.
-5. Press the icon, then **Open full report** for the evidence.
+The engine adds the weight of every signal and maps the total through a
+logistic function to a score from 1 to 99. A low score means the client is
+probably automated. This range copies the convention that commercial systems
+use, so results map onto their published thresholds.
 
-That is the whole instrument. Nothing is sent anywhere until you set a harness
-URL yourself.
+| Score | Verdict |
+|---|---|
+| 1 to 10 | automated |
+| 11 to 30 | likely automated |
+| 31 to 60 | unclear |
+| 61 to 99 | likely human |
 
-## Add the backend for the TLS and network layers
-
-```
-pipenv run start
-```
-
-Then in the extension popup, set the harness URL to `https://127.0.0.1:8443`,
-type a run label, and turn on **Send every report to the harness**. Load
-`https://127.0.0.1:8443/dashboard` once in the same browser and accept the
-self-signed certificate, otherwise the extension cannot reach it.
-
-The popup then shows two scores. The local score comes from seven layers. The
-harness score adds the TLS layer and the network layer to the same report.
-
-Set `TLS_ENABLED=false` in `.env` to serve plain HTTP while debugging the page.
-The TLS layer reports no data in that mode.
+Each signal carries a detection ID such as `runtime.cdp_attached`. Report the
+detection IDs, not only the score. The IDs name what the instrument measured;
+a score is one number a reader cannot check.
 
 ## How the TLS layer survives uvicorn
 
@@ -188,57 +199,17 @@ ClientHello. `tls.not_measured` is a fact about the harness — it was not in a
 position to look. Charging a client for the second would quietly corrupt the
 run. The same signal appears when `TLS_ENABLED=false`, for the same reason.
 
-## The nine layers
+## Why the page reports through a run token
 
-| Layer | Measured by | What it reads | Example signal |
-|---|---|---|---|
-| network | backend | The source address | Reputation of the address range |
-| tls | backend | The raw ClientHello | The client sends no GREASE value |
-| http | page, extension | The real navigation headers and their order | The header order does not match Chrome |
-| browser | page, extension | The page-visible fingerprint | The WebGL renderer is a software rasterizer |
-| worlds | extension only | The two JavaScript worlds | The page and the browser disagree on `navigator.webdriver` |
-| runtime | page, extension | How the engine behaves | A CDP client is attached; `Error.prepareStackTrace` is set |
-| environment | page, extension | What the machine actually has | No camera, no voices, no licensed H.264 |
-| behavior | page, extension | Pointer kinematics, keystroke dynamics, `isTrusted` | Keys were held for 3 ms; the pointer was placed, not moved |
-| consistency | page, extension | Every claim against every other | The User-Agent and `navigator.platform` disagree |
+The page posts its report with `fetch`, whose headers belong to a background
+request and describe nothing about the client. The navigation that served the
+page is the request worth reading on the http layer.
 
-The order is the order a production stack meets a client, so the first layer
-with a positive signal is the layer that would have caught it. The report names
-that layer.
-
-The `worlds` layer is the one only an extension can measure, and it is usually
-the strongest. The `runtime` and `environment` layers exist because `worlds`
-has a blind spot: a browser patched at the source changes both worlds at once.
-They read how the engine behaves and what hardware backs it, which a property
-rewrite does not change.
-
-## Why the extension forwards its own header capture
-
-The extension reports to the backend over `fetch`. Those are background-request
-headers, not navigation headers, so scoring them would fail the http checks for
-reasons that say nothing about the client. The extension watches the real
-top-level navigation with `chrome.webRequest` and sends what it saw. The
-backend scores that and records the POST headers separately, because the
-connection they arrived on is what carried the handshake. The `header_source`
-column in the export says which request was scored.
-
-## Score
-
-The engine adds the weight of every signal and maps the total through a
-logistic function to a score from 1 to 99. A low score means the client is
-probably automated. This range copies the convention that commercial systems
-use, so results map onto their published thresholds.
-
-| Score | Verdict |
-|---|---|
-| 1 to 10 | automated |
-| 11 to 30 | likely automated |
-| 31 to 60 | unclear |
-| 61 to 99 | likely human |
-
-Each signal carries a detection ID such as `runtime.cdp_attached`. Report the
-detection IDs, not only the score. The IDs name what the instrument measured;
-a score is one number a reader cannot check.
+So the harness hands each page a run token when it serves it, remembers the
+navigation against that token, and takes both back when the report arrives.
+The token also becomes the session id, which is why the page can link to its
+own report before the report exists. The `header_source` column in the export
+says which request was scored.
 
 ## Calibrate before you report a result
 
@@ -261,7 +232,7 @@ runtime probes, and the environment probes need no table.
 
 ## Compare against non-browser clients
 
-The matrix sends a set of non-browser clients to the backend and prints the
+The matrix sends a set of non-browser clients to the harness and prints the
 result table.
 
 ```
@@ -270,19 +241,8 @@ pipenv run matrix --url https://127.0.0.1:8443 --csv results.csv
 
 A client can copy the User-Agent of Chrome and every Chrome header in the
 correct order. The TLS layer still identifies it, because the handshake
-completes before the first header arrives. Add browser rows to the same table
-by running the extension with a run label per client.
-
-## Export
-
-| Source | Holds |
-|---|---|
-| Report page, **Download JSON** | The whole record: both world snapshots, every probe, every signal |
-| Report page, **Download CSV row** | One row in the same columns as the harness export |
-| Popup, **Export history CSV** | One row per report in this browser |
-| `https://host:port/api/export.csv` | Every session the backend logged, with the TLS columns |
-
-Join the extension export and the harness export on the run label.
+completes before the first header arrives. These clients run no JavaScript, so
+they are scored on the network, tls, http and consistency layers alone.
 
 ## Configuration
 
@@ -308,7 +268,7 @@ edit `.env` instead. Without pipenv, the shell wins as usual.
 
 ```
 src/
-├── main.py                FastAPI app: CORS, exception handlers, routers
+├── main.py                FastAPI app: CORS, redirect, exception handlers
 ├── __main__.py            entry point; starts uvicorn and the TLS front end
 ├── constants.py           layer order, score bands, CSV columns
 ├── loaders/
@@ -335,7 +295,6 @@ src/
 ├── utils/__init__.py      make_response, run tokens, verdict bands
 └── static/                task page, collector, report viewer, dashboard
 
-extension/                 the MV3 probe, its own scorer and report page
 examples/                  runnable Playwright and Selenium clients
 tools/                     calibrate.py, client_matrix.py
 data/                      run log, certificate, calibration table
@@ -355,16 +314,26 @@ Interactive docs at `/docs`. Every reply is wrapped as
 | `GET` | `/` | The task page, with a fresh run token |
 | `GET` | `/dashboard` | Every scored session in one table |
 | `GET` | `/report/{id}` | The report viewer for one run |
-| `POST` | `/api/collect` | Score a report from the page or the extension |
+| `POST` | `/api/collect` | Score a report from the task page |
 | `GET` | `/api/sessions` | The most recent scored sessions |
 | `GET` | `/api/sessions/{id}` | One run, with raw telemetry and probe output |
 | `GET` | `/api/probe` | Score the caller itself, for non-browser clients |
 | `GET` | `/api/export.csv` | Every logged session as CSV |
 | `GET` | `/api/health` | Liveness |
 
+## Export
+
+| Source | Holds |
+|---|---|
+| Report page, **Download JSON** | The whole record, including the raw event stream |
+| `https://host:port/api/export.csv` | Every logged session, one row per run |
+
+The CSV carries the per-layer weights and the detection IDs, not only the
+score, because a score is one number a reader cannot check.
+
 ## Scope
 
-Run botlab against your own test origin only. Do not point the backend or any
+Run botlab against your own test origin only. Do not point the harness or any
 test client at a third-party website. The legal exposure in this field comes
 from the defeat of an access control, not from the collection of public data.
 A local origin removes that exposure.
@@ -373,22 +342,19 @@ A local origin removes that exposure.
 
 State these limits in any writeup. They set the boundary of the claim.
 
-1. A page cannot install the probe. This is a laboratory instrument, not a
-   production detector.
-2. The `worlds` layer finds a patch applied through the automation control
-   channel. It does not find a patch compiled into the browser. An anti-detect
-   browser that changes the source patches both worlds at once. This is a
-   finding, not a weakness: it marks the boundary between a scripted stealth
-   plugin and a rebuilt browser, and it explains why the second class costs so
-   much more to produce.
-3. `runtime.cdp_attached` names a debugger, not an automation tool alone. An
+1. Everything the page measures, page script can see. A tool that patches the
+   main world consistently defeats the `browser` and `consistency` layers.
+   What survives is `runtime`, `environment`, `behavior` and `tls`, because
+   those read engine behaviour, machine capability, human motor control and a
+   handshake that happens before any script runs.
+2. `runtime.cdp_attached` names a debugger, not an automation tool alone. An
    open DevTools window trips it the same way. Record whether one was open.
-4. The backend speaks HTTP/1.1 and computes no HTTP/2 frame fingerprint.
-5. The network layer has no address reputation feed. It records the address.
-6. The weights are hand-set, not learned. Report them as a transparent
+3. The harness speaks HTTP/1.1 and computes no HTTP/2 frame fingerprint.
+4. The network layer has no address reputation feed. It records the address.
+5. The weights are hand-set, not learned. Report them as a transparent
    baseline.
-7. The behaviour layer reads one page view, not a profile across a session.
-8. **The behavioural thresholds have no human control group behind them.** The
+6. The behaviour layer reads one page view, not a profile across a session.
+7. **The behavioural thresholds have no human control group behind them.** The
    key-dwell range in `src/detection/behavior.py` comes from published
    keystroke-dynamics work, not from runs against this harness, and the
    pointer thresholds are reasoned rather than measured. Before reporting a
@@ -396,7 +362,7 @@ State these limits in any writeup. They set the boundary of the claim.
    at the distributions in the reports, and set the constants at the top of
    that file from your own data. Every threshold is a named constant for
    exactly this reason.
-9. `examples/selenium_naive.py` has never been run. Playwright drives the
+8. `examples/selenium_naive.py` has never been run. Playwright drives the
    verified path; the Selenium script is written against the documented API
    but was not executed, because chromedriver was not available here.
 
@@ -404,14 +370,25 @@ State these limits in any writeup. They set the boundary of the claim.
 
 Add a signal in one place. Write a function in `src/detection/scoring.py` that
 returns `Signal` objects, give each one a layer, a detection ID, a weight, and
-a sentence that explains the evidence, then call it from `evaluate`. Mirror it
-in `extension/scorer.js` if the extension should score it too.
+a sentence that explains the evidence, then call it from `evaluate`.
 
-Keep the detection IDs and the weights identical across the two, because a run
-may be scored by either. A new layer needs its name adding to `LAYERS` in
-`src/constants.py`, in the position a production stack would meet it, and to
-the matching list in `extension/scorer.js`.
+A new layer needs its name adding to `LAYERS` in `src/constants.py`, in the
+position a production stack would meet it, and to the matching list in
+`src/static/report.html` and `src/static/index.html`.
 
 Behavioural thresholds belong at the top of `src/detection/behavior.py` as
 named constants, never inline, so a reader can see what was assumed and change
 it.
+
+## The extension
+
+An earlier version shipped a Chrome extension that measured a browser from the
+inside and added a `worlds` layer, comparing the main and isolated JavaScript
+worlds to catch stealth patches applied through the automation control channel.
+It was removed to focus on the task page.
+
+It is in the history, not gone. `git show fd3c523:extension/README.md` reads
+its documentation, and `git checkout fd3c523 -- extension/` restores the whole
+folder. The `worlds` layer and the payload plumbing that fed it were removed
+from the harness in the same commit that deleted it, so bringing it back means
+reverting that commit rather than only restoring the folder.

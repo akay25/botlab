@@ -31,23 +31,22 @@ worthless without a version number.
 
 The last row is the control. Without it you cannot report a false-positive rate.
 
-The browser classes carry the extension. The first two classes cannot load an
-extension, so they reach the backend through `tools/client_matrix.py` instead and are
-scored on the network, TLS, HTTP and consistency layers alone.
+The browser classes drive the task page. The first two classes run no
+JavaScript, so they reach the harness through `tools/client_matrix.py` instead
+and are scored on the network, TLS, HTTP and consistency layers alone. Keep
+them in the table anyway: they set the floor a spoofed client cannot get under.
 
 ## 3. Run the trials
 
 1. Start the backend on a machine you control.
 2. Clear `data/sessions.jsonl` before the first trial.
-3. Load the extension in each browser class and set the harness URL and the run
-   label in its popup. Turn on automatic sending.
-4. Calibrate the real browser and the automation clients.
-5. Run each client class thirty times. Use one run label per class.
-6. For the browser classes, interact with the page in each run, and record
-   whether a DevTools window was open. It trips `runtime.cdp_attached` the same
-   way an automation driver does.
-7. Export the data with `/api/export.csv`, and the per-browser history with
-   **Export history CSV** in the popup. Join them on the run label.
+3. Calibrate the real browser and the automation clients.
+4. Run each client class thirty times against the task page. Use one run label
+   per class, passed as `?label=`.
+5. For the control class, perform the tasks by hand. Record whether a DevTools
+   window was open: it trips `runtime.cdp_attached` the same way an automation
+   driver does.
+6. Export the data with `/api/export.csv` and group by the run label.
 
 Thirty runs per class gives enough spread to report a mean and a standard
 deviation. Fewer runs give a number that a reviewer can question.
@@ -110,6 +109,7 @@ State each threat and how you handled it.
 5. **Debugger ambiguity.** `runtime.cdp_attached` fires for any Chrome DevTools
    Protocol client, including an open DevTools window. Record the DevTools state
    of every run, or the control class inherits an automation signal.
-6. **Instrument reach.** The strongest layers need an extension, and a website
-   cannot install one. Frame the `worlds`, `runtime` and `environment` results
-   as a mechanism study, not as a deployable detector.
+6. **Everything here is page-visible.** A tool that patches the main world
+   consistently defeats the `browser` and `consistency` layers. What survives
+   is `runtime`, `environment`, `behavior` and `tls`. Say which layers carried
+   a result, not only that the harness caught the client.

@@ -8,7 +8,6 @@ LAYERS = [
     "tls",
     "http",
     "browser",
-    "worlds",
     "runtime",
     "environment",
     "behavior",
@@ -43,5 +42,5 @@ CSV_COLUMNS = (
         "user_agent",
     ]
     + ["w_" + name for name in LAYERS]
-    + ["detection_ids", "source", "header_source", "page_url", "divergences"]
+    + ["detection_ids", "source", "header_source", "page_url"]
 )

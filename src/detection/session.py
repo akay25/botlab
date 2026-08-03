@@ -41,7 +41,6 @@ def new_session(
         "runtime": None,
         "environment": None,
         "behavior": None,
-        "extension": None,
         "source": "probe",
         "label": "",
         "header_source": "transport",
@@ -72,33 +71,12 @@ def adopt_page_visit(session: Dict[str, Any], visit: Optional[Dict[str, Any]],
     return True
 
 
-def adopt_captured_request(session: Dict[str, Any], captured) -> None:
-    """Score an extension run on the navigation it captured for us.
-
-    Keep the report's own headers beside it, because the connection they
-    arrived on is what carried the TLS handshake.
-    """
-    order = getattr(captured, "order", None) or []
-    if order:
-        session["transport_headers"] = session["headers"]
-        session["transport_header_order"] = session["header_order"]
-        session["headers"] = {name.lower(): value
-                              for name, value in (captured.headers or {}).items()}
-        session["header_order"] = [str(name).lower() for name in order]
-        session["header_source"] = "navigation"
-    elif session.get("source") == "extension":
-        # Nothing was captured, usually because the tab loaded before the
-        # extension did. Say so rather than score the wrong request.
-        session["header_source"] = "unavailable"
-
-
 def apply_payload(session: Dict[str, Any], payload) -> None:
     """Copy the reported blocks onto the session."""
     session["js"] = payload.js
     session["runtime"] = payload.runtime
     session["environment"] = payload.environment
     session["behavior"] = payload.behavior
-    session["extension"] = payload.extension
     session["source"] = payload.source
     session["label"] = payload.label
     session["page_url"] = payload.page_url

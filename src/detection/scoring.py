@@ -134,10 +134,6 @@ def _order_distance(seen, canonical):
 def score_http(session):
     """Check the request headers, their order, and the declared client."""
     out = []
-    if session.get("header_source") == "unavailable":
-        return [Signal("http", "http.headers_not_captured", 0.0,
-                       "The extension captured no top-level navigation for this tab, so the "
-                       "http layer read nothing. Reload the page under test.")]
     headers = session.get("headers", {})
     order = session.get("header_order", [])
     user_agent = headers.get("user-agent", "")
@@ -268,9 +264,7 @@ def _path_straightness(points):
 def score_behavior(session, metrics=None):
     """Check the movement and timing that the client recorded.
 
-    Two telemetry shapes arrive here. The task page sends raw events, which
-    `behavior.py` analyses in depth. The extension sends a smaller summary,
-    which the legacy path below reads. Both land in the same layer.
+    The task page sends raw events, which `behavior.py` analyses in depth.
     """
     out = []
     beh = session.get("behavior")
@@ -336,33 +330,6 @@ def score_behavior(session, metrics=None):
                           "The first interaction came %d ms after load." % first))
     return out
 
-
-
-# ----------------------------------------------------------------- worlds
-
-def score_worlds(session):
-    """Compare the main world with the isolated world.
-
-    Only a browser extension can make this comparison. A stealth patch that
-    arrives through the automation control channel lands in the main world.
-    A content script in the isolated world reads the unpatched value.
-    """
-    out = []
-    ext = session.get("extension")
-    if not ext:
-        return out
-    divergences = ext.get("divergences") or []
-    if not divergences:
-        out.append(Signal("worlds", "worlds.no_divergence", -1.2,
-                          "The main world and the isolated world agree on every field."))
-        return out
-    for item in divergences:
-        field = item.get("field", "unknown")
-        strong = field == "webdriver" or field.startswith("native:")
-        out.append(Signal("worlds", "worlds.divergence." + field, 3.2 if strong else 2.0,
-                          "The page sees %s as %s. The browser reports %s."
-                          % (field, item.get("main"), item.get("isolated"))))
-    return out
 
 
 # ---------------------------------------------------------------- runtime
@@ -601,7 +568,6 @@ def evaluate(session, calibration=None):
     signals += score_tls(session, calibration)
     signals += score_http(session)
     signals += score_browser(session)
-    signals += score_worlds(session)
     signals += score_runtime(session)
     signals += score_environment(session)
     signals += score_behavior(session, metrics)
