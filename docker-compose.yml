@@ -1,0 +1,35 @@
+services:
+  botlab:
+    build: .
+    container_name: botlab
+    ports:
+      # Publish only the ClientHello front end. uvicorn's upstream port
+      # (APP_PORT + 1) stays on the container's loopback and is never exposed.
+      - "8443:8443"
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8443"
+      TLS_ENABLED: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Addresses clients will use to reach this machine; the certificate must
+      # cover them or the browser rejects it and the page's report fails with
+      # what reads as a CORS error. Inside the container the harness can see
+      # its own address but not this machine's, so name the LAN address here:
+      #   CERT_HOSTS=192.168.137.225 docker compose up -d
+      # or put CERT_HOSTS in a .env file next to this one.
+      CERT_HOSTS: ${CERT_HOSTS:-}
+    volumes:
+      # sessions.jsonl, calibration.json and the certificate live here, so
+      # runs survive a rebuild and the log can be read from the host.
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import ssl, urllib.request; urllib.request.urlopen('https://127.0.0.1:8443/api/health', context=ssl._create_unverified_context())"
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
