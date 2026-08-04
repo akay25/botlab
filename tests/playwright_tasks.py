@@ -25,6 +25,7 @@ Watch whether that is enough.
 """
 
 import argparse
+from html import parser
 import math
 import random
 import sys
@@ -190,11 +191,10 @@ def task_acquisition(page, mode, position):
 
 # ------------------------------------------------------------------- run
 
-def run(url, label, mode, headless, executable=None):
+def run(url, label, mode):
     with sync_playwright() as play:
-        browser = play.chromium.launch(headless=headless, executable_path=executable)
-        context = browser.new_context(ignore_https_errors=True,
-                                      viewport={"width": 1440, "height": 1000})
+        browser = play.chromium.connect("ws://localhost:3000/")
+        context = browser.new_context(ignore_https_errors=True)
         page = context.new_page()
         page.goto("%s/?label=%s" % (url.rstrip("/"), label))
         page.wait_for_selector("#fitts-target")
@@ -249,19 +249,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="https://127.0.0.1:8443")
     parser.add_argument("--mode", choices=["naive", "human"], default="naive")
-    parser.add_argument("--label", default="")
-    parser.add_argument("--headed", action="store_true", help="Show the browser window.")
-    parser.add_argument("--executable", default=None,
-                        help="Path to a specific Chrome build. Record the version you used.")
     parser.add_argument("--seed", type=int, default=None, help="Make a run repeatable.")
     args = parser.parse_args()
 
     if args.seed is not None:
         random.seed(args.seed)
-    label = args.label or ("playwright-" + args.mode)
+    label = "playwright-" + args.mode
 
-    result, tasks = run(args.url, label, args.mode,
-                        headless=not args.headed, executable=args.executable)
+    result, tasks = run(args.url, label, args.mode)
     traps = report(result, tasks, args.url, args.mode)
 
     # The script fails if it tripped a honeypot or left a required task undone.
