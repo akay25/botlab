@@ -4,9 +4,9 @@
    server derives every metric from the raw stream, so a stored run can be
    re-scored later when the rules change, and a reader can check the numbers.
 
-   The fingerprint probes below mirror the ones in extension/main-world.js.
-   The extension keeps its own copy because it must not leave globals on a
-   third-party page. Change one, change the other. */
+   Every probe below is page-visible, so a tool that patches the main world
+   consistently can defeat what this file reports. What it cannot reach is the
+   handshake read before any script runs, and the shape of the raw events. */
 
 (function () {
   "use strict";
@@ -164,13 +164,18 @@
   }
 
   function readWebgl() {
-    var out = { vendor: "", renderer: "" };
+    /* Report the adapter, and whether the unmasked names were readable. A
+       masked renderer says "WebKit WebGL" whatever the machine has, so the
+       server must know not to read it as evidence either way. */
+    var out = { vendor: "", renderer: "", unmasked: false, supported: false };
     try {
       var canvas = document.createElement("canvas");
       var gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
       if (!gl) { return out; }
+      out.supported = true;
       var info = gl.getExtension("WEBGL_debug_renderer_info");
       if (info) {
+        out.unmasked = true;
         out.vendor = String(gl.getParameter(info.UNMASKED_VENDOR_WEBGL) || "");
         out.renderer = String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL) || "");
       } else {
@@ -206,12 +211,23 @@
     } catch (err) { return null; }
   }
 
-  function countFonts() {
-    var probes = ["Arial", "Verdana", "Times New Roman", "Courier New", "Georgia",
-      "Trebuchet MS", "Comic Sans MS", "Impact", "Tahoma", "Segoe UI",
-      "Helvetica Neue", "Cambria", "Consolas", "Palatino Linotype",
-      "Lucida Console", "Franklin Gothic Medium", "Candara", "Optima",
-      "Menlo", "Roboto"];
+  /* Every name the font probe tests for. PLATFORM_FONTS in
+     src/detection/reference.py reads these names, so a font named there must
+     appear here or it can never be resolved. */
+  var FONT_PROBES = ["Arial", "Verdana", "Times New Roman", "Courier New", "Georgia",
+    "Trebuchet MS", "Comic Sans MS", "Impact", "Tahoma", "Segoe UI",
+    "Helvetica Neue", "Cambria", "Consolas", "Palatino Linotype",
+    "Lucida Console", "Franklin Gothic Medium", "Candara", "Optima",
+    "Menlo", "Roboto", "Calibri", "Geneva", "Monaco", "Courier",
+    "Lucida Grande", "MS Gothic", "Noto Sans", "DejaVu Sans", "Liberation Sans",
+    "Ubuntu"];
+
+  function probeFonts() {
+    /* Report which fonts resolved, not how many. Which ones a machine has is
+       evidence about the machine: a name that ships only with one desktop
+       platform contradicts a User-Agent that claims another. The server counts
+       them and compares them, so a stored run can be re-read when the rules
+       change. */
     var base = ["monospace", "sans-serif", "serif"];
     try {
       if (!document.body) { return null; }
@@ -227,16 +243,19 @@
         span.style.fontFamily = base[i];
         control[base[i]] = [span.offsetWidth, span.offsetHeight];
       }
-      var found = 0;
-      for (i = 0; i < probes.length; i++) {
+      var found = [];
+      for (i = 0; i < FONT_PROBES.length; i++) {
         for (var j = 0; j < base.length; j++) {
-          span.style.fontFamily = "'" + probes[i] + "'," + base[j];
+          span.style.fontFamily = "'" + FONT_PROBES[i] + "'," + base[j];
           if (span.offsetWidth !== control[base[j]][0] ||
-              span.offsetHeight !== control[base[j]][1]) { found += 1; break; }
+              span.offsetHeight !== control[base[j]][1]) {
+            found.push(FONT_PROBES[i]);
+            break;
+          }
         }
       }
       document.body.removeChild(span);
-      return found;
+      return { fonts: found, checked: FONT_PROBES.length };
     } catch (err) { return null; }
   }
 
@@ -340,19 +359,33 @@
   }
 
   function probeMediaDevices() {
+    /* Report the device kinds, not only how many there are. A microphone and a
+       camera are hardware a container does not have, and enumerateDevices
+       reports the kind of each device even before permission is granted; only
+       the labels stay blank until then. */
+    var EMPTY = {
+      media_device_count: null, media_device_kinds: "",
+      media_devices: null, media_devices_labelled: null
+    };
     if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
-      return Promise.resolve({ media_device_count: null, media_device_kinds: "" });
+      return Promise.resolve(EMPTY);
     }
     return withTimeout(navigator.mediaDevices.enumerateDevices().then(function (list) {
       var kinds = {};
-      list.forEach(function (d) { kinds[d.kind] = (kinds[d.kind] || 0) + 1; });
+      var labelled = 0;
+      list.forEach(function (d) {
+        kinds[d.kind] = (kinds[d.kind] || 0) + 1;
+        if (d.label) { labelled += 1; }
+      });
       return {
         media_device_count: list.length,
+        media_devices: kinds,
+        media_devices_labelled: labelled,
         media_device_kinds: Object.keys(kinds).map(function (k) {
           return k + ":" + kinds[k];
         }).join(",")
       };
-    }), 1200, { media_device_count: null, media_device_kinds: "" });
+    }), 1200, EMPTY);
   }
 
   function probeVoices() {
@@ -511,14 +544,19 @@
 
   function buildFingerprint(mismatch) {
     var gl = readWebgl();
+    var fonts = probeFonts();
     return {
       webdriver: navigator.webdriver === true,
       automation_keys: findAutomationKeys(),
       patched_natives: findPatchedNatives(),
       webgl_vendor: gl.vendor,
       webgl_renderer: gl.renderer,
+      webgl_unmasked: gl.unmasked,
+      webgl_supported: gl.supported,
       canvas_hash: canvasHash(),
-      font_count: countFonts(),
+      fonts: fonts ? fonts.fonts : null,
+      fonts_checked: fonts ? fonts.checked : null,
+      font_count: fonts ? fonts.fonts.length : null,
       permission_mismatch: mismatch,
       has_chrome_object: typeof window.chrome === "object" && window.chrome !== null,
       plugin_count: navigator.plugins ? navigator.plugins.length : 0,

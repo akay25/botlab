@@ -6,8 +6,8 @@ post is not evidence.
 
 Procedure:
   1. Start the backend.
-  2. Send a report from the client you want to record. A browser sends one
-     through the extension; a non-browser client through client_matrix.py.
+  2. Send a report from the client you want to record. A browser sends one by
+     driving the task page; a non-browser client through client_matrix.py.
   3. Run this script with the class and the label for that client.
 
 Example:

@@ -155,6 +155,15 @@
     return s;
   }
 
+  /* The engine stores a weight where positive counts against the client. The
+     report shows that value negated, so the number, the bar direction and the
+     colour all read the same way as the score rail above it: to the right and
+     blue is human, to the left and red is automated. What /api/sessions and
+     export.csv carry is the raw engine weight, which is this number negated. */
+  function toward(weight) { return -(weight || 0); }
+
+  function signed(value) { return (value > 0 ? "+" : "") + value.toFixed(1); }
+
   function ladder(layers, caught) {
     var host = el("div", "ladder");
     var peak = 4;
@@ -163,15 +172,15 @@
     });
     LAYERS.forEach(function (n) {
       var entry = layers[n];
-      var w = (entry || {}).weight || 0;
-      var pct = Math.min(50, Math.abs(w) / peak * 50);
+      var h = toward((entry || {}).weight);
+      var pct = Math.min(50, Math.abs(h) / peak * 50);
       var row = el("div", "row");
       var label = el("div", "n" + (n === caught ? " hit" : ""), n);
       var axis = el("div", "axis");
       axis.innerHTML = '<div class="z"></div><div class="b" style="background:' +
-        (w >= 0 ? "var(--bot)" : "var(--human)") + ";left:" + (w >= 0 ? 50 : 50 - pct) +
+        (h >= 0 ? "var(--human)" : "var(--bot)") + ";left:" + (h >= 0 ? 50 : 50 - pct) +
         "%;width:" + pct + '%"></div>';
-      var value = el("div", "v", (w > 0 ? "+" : "") + w.toFixed(1));
+      var value = el("div", "v", signed(h));
       row.appendChild(label); row.appendChild(axis); row.appendChild(value);
       host.appendChild(row);
     });
@@ -185,11 +194,12 @@
       if (!rows.length) { return; }
       var weight = rows.reduce(function (sum, s) { return sum + s.weight; }, 0);
       var group = el("div", "group");
-      group.appendChild(el("h3", null, layer + " · " + (weight > 0 ? "+" : "") + weight.toFixed(1)));
+      group.appendChild(el("h3", null, layer + " · " + signed(toward(weight))));
       var ul = el("ul", "sig");
+      // Most automated-looking first, which is the most negative once negated.
       rows.sort(function (a, b) { return b.weight - a.weight; }).forEach(function (s) {
         var li = el("li", s.weight > 0 ? "bot" : "human");
-        li.appendChild(el("code", null, s.id + "  " + (s.weight > 0 ? "+" : "") + s.weight));
+        li.appendChild(el("code", null, s.id + "  " + signed(toward(s.weight))));
         li.appendChild(el("span", null, s.detail));
         ul.appendChild(li);
       });
@@ -233,8 +243,16 @@
     host.appendChild(verdict);
 
     host.appendChild(section("Evidence by layer",
-      ladder(result.layers || {}, result.first_catching_layer)));
-    host.appendChild(section("Signals", signals(result.signals)));
+      ladder(result.layers || {}, result.first_catching_layer),
+      "Each bar reads the same way as the rail above it: to the right and blue is "
+      + "evidence of a person, to the left and red is evidence of automation, and the "
+      + "length is how much that layer contributed. A layer with no bar found nothing "
+      + "either way. export.csv stores these numbers negated, so w_browser is the "
+      + "value shown here with its sign turned around."));
+    host.appendChild(section("Signals", signals(result.signals),
+      "One line per piece of evidence, most automated-looking first. Report the "
+      + "detection IDs, not only the score: an ID names what was measured, and a "
+      + "score is one number a reader cannot check."));
 
     var metrics = result.behavior_metrics;
     if (metrics) {

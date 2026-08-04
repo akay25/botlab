@@ -48,9 +48,9 @@ probe_router = APIRouter(
 async def probe(request: Request, response: Response, label: str = ""):
     """Score the caller itself.
 
-    A non-browser client runs no JavaScript and loads no extension, so this
-    reaches the network, tls, http and consistency layers only. It is how
-    curl, urllib and the client matrix enter the results table.
+    A non-browser client runs no JavaScript, so this reaches the network, tls,
+    http and consistency layers only. It is how curl, urllib and the client
+    matrix enter the results table.
     """
     peer = request.client
     handshake = lookup(peer.port if peer else None)

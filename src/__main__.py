@@ -30,8 +30,7 @@ def main() -> None:
     print("Dashboard:  %s/dashboard" % origin)
     print("CSV export: %s/api/export.csv" % origin)
     print("API docs:   %s/docs" % origin)
-    print("Point an automation tool at the task page, or set %s" % origin)
-    print("as the harness URL in the extension popup.")
+    print("Point an automation tool at the task page.")
     if config.TLS_ENABLED:
         print("")
         print("uvicorn logs an internal address on port %d below. Ignore it."

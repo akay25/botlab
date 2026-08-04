@@ -37,23 +37,16 @@ class ScoreResult(BaseModel):
 
 
 class CollectResult(ScoreResult):
-    """A score plus the two things only the harness can tell the client."""
+    """A score plus the things only the harness can tell the client.
+
+    `/api/collect` builds this, so the shape is enforced rather than merely
+    described. It travels inside the usual {success, message, data} envelope.
+    """
 
     session_id: str
     ip: Optional[str] = None
     header_source: Optional[str] = None
+    # Whether the harness was in a position to observe a handshake at all,
+    # which is a different claim from whether the client sent one.
+    tls_measured: Optional[bool] = None
     tls: Optional[Dict[str, Any]] = None
-
-
-class SessionSummary(BaseModel):
-    """One row of the dashboard."""
-
-    id: str
-    time: str
-    label: str = ""
-    ip: str = ""
-    source: str = ""
-    page_url: str = ""
-    headers: Dict[str, str] = Field(default_factory=dict)
-    tls: Optional[Dict[str, Any]] = None
-    result: Optional[ScoreResult] = None

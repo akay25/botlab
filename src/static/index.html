@@ -160,6 +160,9 @@
   </div>
   <div class="rail"><div class="track"></div><div class="needle" id="needle" style="left:50%"></div></div>
   <div class="ends"><span>1 automated</span><span>50 unclear</span><span>99 human</span></div>
+  <p class="task-note">Each bar below reads the same way as the rail above it. To the
+  right and blue is evidence of a person; to the left and red is evidence of automation.
+  A layer with no bar found nothing either way.</p>
   <div class="ladder" id="ladder"></div>
   <ul class="sig" id="signals"></ul>
 </section>
@@ -236,6 +239,15 @@
     document.addEventListener(name, scheduleAutoFinish, true);
   });
 
+  /* The engine stores a weight where positive counts against the client. This
+     page shows that value negated, so the number, the bar direction and the
+     colour all read the same way as the rail above: right and blue is human,
+     left and red is automated. export.csv carries the raw engine weight, which
+     is the number shown here with its sign turned around. */
+  function toward(weight) { return -(weight || 0); }
+
+  function signed(value) { return (value > 0 ? "+" : "") + value.toFixed(1); }
+
   function drawLadder(layers, caught) {
     var host = document.getElementById("ladder");
     host.innerHTML = "";
@@ -244,16 +256,16 @@
       peak = Math.max(peak, Math.abs((layers[n] || {}).weight || 0));
     });
     LAYERS.forEach(function (n) {
-      var w = (layers[n] || {}).weight || 0;
-      var pct = Math.min(50, Math.abs(w) / peak * 50);
+      var h = toward((layers[n] || {}).weight);
+      var pct = Math.min(50, Math.abs(h) / peak * 50);
       var row = document.createElement("div");
       row.className = "row";
       row.innerHTML =
         '<div class="n' + (n === caught ? " hit" : "") + '">' + n + "</div>" +
         '<div class="axis"><div class="z"></div><div class="b" style="background:' +
-        (w >= 0 ? "var(--bot)" : "var(--human)") + ";left:" + (w >= 0 ? 50 : 50 - pct) +
+        (h >= 0 ? "var(--human)" : "var(--bot)") + ";left:" + (h >= 0 ? 50 : 50 - pct) +
         "%;width:" + pct + '%"></div></div>' +
-        '<div class="v">' + (w > 0 ? "+" : "") + w.toFixed(1) + "</div>";
+        '<div class="v">' + signed(h) + "</div>";
       host.appendChild(row);
     });
   }
@@ -266,7 +278,7 @@
         var li = document.createElement("li");
         li.className = s.weight > 0 ? "bot" : "human";
         var code = document.createElement("code");
-        code.textContent = s.id + "  " + (s.weight > 0 ? "+" : "") + s.weight;
+        code.textContent = s.id + "  " + signed(toward(s.weight));
         var span = document.createElement("span");
         span.textContent = s.detail;
         li.appendChild(code);

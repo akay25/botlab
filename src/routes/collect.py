@@ -6,6 +6,7 @@ from src.loaders.config import config
 from src.loaders.logging import get_logger
 from src.loaders.tls_proxy import lookup
 from src.types.input.collect import CollectPayload
+from src.types.response.detection import CollectResult
 from src.utils import make_response
 
 logger = get_logger("routes.collect")
@@ -53,11 +54,12 @@ async def collect(body: CollectPayload, request: Request, response: Response):
         result["first_catching_layer"],
     )
 
-    return make_response(response, data={
+    reply = CollectResult(
         **result,
-        "session_id": current["id"],
-        "ip": current["ip"],
-        "header_source": current.get("header_source"),
-        "tls_measured": current.get("tls_measured"),
-        "tls": current.get("tls"),
-    })
+        session_id=current["id"],
+        ip=current["ip"],
+        header_source=current.get("header_source"),
+        tls_measured=current.get("tls_measured"),
+        tls=current.get("tls"),
+    )
+    return make_response(response, data=reply.model_dump())

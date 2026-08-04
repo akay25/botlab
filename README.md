@@ -138,6 +138,44 @@ Movements are judged one at a time. A path that visits three targets in three
 corners is bent by the task, not by a hand, so a whole-session straightness
 ratio says nothing.
 
+### What the hardware checks read
+
+Three of these read the machine rather than what the browser says about it.
+A stealth patch rewrites a property; it does not fit a graphics card, install
+a font, or wire up a microphone.
+
+**GPU or CPU.** `reference.gpu_class` reads the WebGL vendor and renderer
+together, because Chrome reports the adapter through ANGLE: the vendor carries
+`Google Inc. (NVIDIA)` and the renderer carries the board name. A machine
+drawing on a card scores `browser.hardware_renderer` at −0.9. A machine drawing
+on the CPU — SwiftShader, llvmpipe, lavapipe, WARP — scores
+`browser.software_renderer` at +1.9, and a client that also claims a desktop
+platform adds `consistency.desktop_without_gpu`. Software is tested before
+hardware: a rasterizer never names a real card, but the box it runs on might,
+and testing the other way round would read a CPU renderer as a GPU. When
+`WEBGL_debug_renderer_info` is unavailable the renderer name is generic, so the
+run carries `browser.renderer_masked` at weight 0 rather than a guess — the
+same distinction `tls.not_measured` draws.
+
+**Fonts.** The page reports which fonts resolved, not how many, and the server
+counts them. Under `FEW_FONTS` is `browser.few_fonts`; at or above `MANY_FONTS`
+is `browser.rich_font_set`. Which ones resolved is the stronger signal:
+`PLATFORM_FONTS` lists names that ship with one desktop platform only, so a
+client claiming Windows while resolving Menlo and Optima and no Windows font at
+all scores `consistency.font_platform_mismatch`. That fires only when the
+claimed platform's fonts are all absent *and* another platform's are present, so
+a machine that simply carries few fonts is not accused of lying.
+
+**Media devices.** `enumerateDevices` reports the kind of every device before
+permission is granted; only the labels stay blank. A microphone scores
+`environment.microphone_present` at −0.8 and a camera
+`environment.camera_present` at −0.5, because a container has no sound card to
+enumerate one from. No devices at all remains `environment.no_media_devices`.
+
+Both new thresholds are named constants at the top of `src/detection/scoring.py`
+and are reasoned rather than measured, so limit 7 below applies to them exactly
+as it applies to the behavioural ones.
+
 ## Score
 
 The engine adds the weight of every signal and maps the total through a
@@ -155,6 +193,19 @@ use, so results map onto their published thresholds.
 Each signal carries a detection ID such as `runtime.cdp_attached`. Report the
 detection IDs, not only the score. The IDs name what the instrument measured;
 a score is one number a reader cannot check.
+
+### Two sign conventions, and which one you are reading
+
+The engine stores a weight where **positive counts against the client**:
+`browser.software_renderer` is `+1.9`, `browser.hardware_renderer` is `-0.9`.
+That is what `evaluate` sums, and it is what `/api/sessions` and the `w_` columns
+of `export.csv` carry. Quote these numbers in a writeup.
+
+The task page and the report viewer show that value **negated**, so that the
+number, the bar direction and the colour all agree with the score rail above
+them: to the right and blue is evidence of a person, to the left and red is
+evidence of automation. A layer that reads `+2.7` on screen is `-2.7` in the
+export. Only the two HTML files do this; nothing server-side is affected.
 
 ## How the TLS layer survives uvicorn
 

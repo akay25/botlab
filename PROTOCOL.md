@@ -54,7 +54,7 @@ deviation. Fewer runs give a number that a reviewer can question.
 ## 4. Report these tables
 
 **Table A — detection by layer.** One row per client class. One column per each
-of the nine layers. Each cell holds the share of runs that the layer flagged.
+of the eight layers. Each cell holds the share of runs that the layer flagged.
 The `w_` columns of the export give the per-layer weights directly. This table
 shows where each class fails.
 

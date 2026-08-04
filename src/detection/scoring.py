@@ -9,13 +9,24 @@ layer caught a client, which is the measurement a thesis needs.
 """
 
 import math
-import statistics
 
-from src.constants import LAYERS, VERDICT_BANDS
+from src.constants import LAYERS
+from src.utils import verdict_for
 
 from . import behavior, reference
 
 __all__ = ["LAYERS", "Signal", "evaluate"]
+
+# Thresholds for the machine-capability checks, named rather than inline so a
+# reader can see what was assumed and change it. These are reasoned from what a
+# desktop install carries, not measured against a control group. Run the task
+# page by hand, read the numbers in the reports, and set them from your own data
+# before reporting a result. The same caveat applies here as in behavior.py.
+#
+# Below this many resolved fonts the machine is not a desktop install.
+FEW_FONTS = 8
+# At or above this many, it carries a full system font set.
+MANY_FONTS = 14
 
 
 class Signal:
@@ -195,15 +206,34 @@ def score_browser(session):
         out.append(Signal("browser", "browser.automation_globals", 2.8,
                           "The page holds automation properties: %s." % ", ".join(found[:4])))
 
-    renderer = (fp.get("webgl_renderer") or "").lower()
+    # Is the machine drawing on a GPU or on the CPU? A desktop with a screen has
+    # a graphics card and uses it. A headless container has none, so Chromium
+    # falls back to a software rasterizer and draws every pixel on the CPU.
+    renderer = fp.get("webgl_renderer") or ""
+    vendor = fp.get("webgl_vendor") or ""
+    gpu = reference.gpu_class(vendor, renderer)
     if not renderer:
         out.append(Signal("browser", "browser.no_webgl", 1.3, "WebGL returned no renderer name."))
+    elif gpu == "software":
+        out.append(Signal("browser", "browser.software_renderer", 1.9,
+                          "WebGL is drawing on the CPU. The renderer is a software "
+                          "rasterizer: %s." % renderer[:80]))
+    elif gpu == "hardware":
+        out.append(Signal("browser", "browser.hardware_renderer", -0.9,
+                          "WebGL is drawing on a real GPU: %s." % renderer[:80]))
+    elif fp.get("webgl_unmasked") is False:
+        # The unmasked names were not readable, so the renderer string describes
+        # nothing about the machine. That is a fact about the probe, not a claim
+        # about the client, and it carries no weight either way.
+        out.append(Signal("browser", "browser.renderer_masked", 0.0,
+                          "WEBGL_debug_renderer_info was unavailable, so the renderer name "
+                          "is generic and says nothing about the hardware: %s."
+                          % renderer[:60]))
     else:
-        for marker in reference.SOFTWARE_RENDERER_MARKERS:
-            if marker in renderer:
-                out.append(Signal("browser", "browser.software_renderer", 1.9,
-                                  "The WebGL renderer is a software rasterizer: %s." % renderer[:60]))
-                break
+        out.append(Signal("browser", "browser.renderer_unrecognised", 0.0,
+                          "The renderer names neither a known GPU nor a known software "
+                          "rasterizer: %s. Add it to reference.py once you know which."
+                          % renderer[:80]))
 
     if fp.get("patched_natives"):
         out.append(Signal("browser", "browser.patched_natives", 2.4,
@@ -224,12 +254,20 @@ def score_browser(session):
                           "The User-Agent claims Chrome but window.chrome is absent."))
 
     # A failed font probe reports nothing rather than zero, so read the count
-    # only when the client actually sent a number.
+    # only when the client actually sent a number. A container ships a handful
+    # of fonts; a desktop install carries the whole system set.
     fonts = fp.get("font_count")
-    if isinstance(fonts, int) and fonts < 8:
-        out.append(Signal("browser", "browser.few_fonts", 1.1,
-                          "The client resolved %d fonts. A desktop install resolves many more."
-                          % fonts))
+    checked = fp.get("fonts_checked")
+    if isinstance(fonts, int):
+        scale = " of %d probed" % checked if isinstance(checked, int) else ""
+        if fonts < FEW_FONTS:
+            out.append(Signal("browser", "browser.few_fonts", 1.1,
+                              "The client resolved %d fonts%s. A desktop install resolves "
+                              "many more." % (fonts, scale)))
+        elif fonts >= MANY_FONTS:
+            out.append(Signal("browser", "browser.rich_font_set", -0.6,
+                              "The client resolved %d fonts%s, the spread a desktop install "
+                              "carries." % (fonts, scale)))
 
     if fp.get("hardware_concurrency", 0) in (0, 1):
         out.append(Signal("browser", "browser.low_concurrency", 0.7,
@@ -244,92 +282,15 @@ def score_browser(session):
 
 # --------------------------------------------------------------- behavior
 
-def _path_straightness(points):
-    """Return the ratio of traveled distance to direct distance.
-
-    A value near 1.0 means a straight line. A human hand does not draw one.
-    """
-    if len(points) < 3:
-        return None
-    traveled = 0.0
-    for a, b in zip(points, points[1:]):
-        traveled += math.dist((a["x"], a["y"]), (b["x"], b["y"]))
-    direct = math.dist((points[0]["x"], points[0]["y"]),
-                       (points[-1]["x"], points[-1]["y"]))
-    if traveled == 0:
-        return None
-    return direct / traveled
-
-
 def score_behavior(session, metrics=None):
     """Check the movement and timing that the client recorded.
 
-    The task page sends raw events, which `behavior.py` analyses in depth.
+    The task page sends raw events. Every metric behind these findings is
+    derived in `behavior.py`, on the server, so a stored run can be re-scored
+    when the rules change.
     """
-    out = []
-    beh = session.get("behavior")
-    if beh is None:
-        return [Signal("behavior", "behavior.no_telemetry", 0.6,
-                       "The session reported no interaction data.")]
-
-    if beh.get("version") == 2 or "pointer" in beh:
-        return [Signal("behavior", f["id"], f["weight"], f["detail"])
-                for f in behavior.findings(beh, metrics)]
-
-    moves = beh.get("mouse", [])
-    clicks = beh.get("clicks", 0)
-    keys = beh.get("key_intervals", [])
-
-    # An isolated-world listener reads isTrusted before page code can swap the
-    # event object. A false flag means a script dispatched the event.
-    untrusted = beh.get("untrusted_events", 0)
-    if untrusted:
-        out.append(Signal("behavior", "behavior.untrusted_events", 2.9,
-                          "%d events carried isTrusted false. A script dispatched them."
-                          % untrusted))
-
-    scrolls = beh.get("scroll_deltas") or []
-    if len(scrolls) >= 4 and len(set(scrolls)) == 1:
-        out.append(Signal("behavior", "behavior.uniform_scroll", 1.4,
-                          "Every wheel event carried the same delta of %s. A wheel emits a "
-                          "varying delta." % scrolls[0]))
-
-    if clicks and len(moves) < 3:
-        out.append(Signal("behavior", "behavior.click_without_move", 2.2,
-                          "The client clicked without moving the pointer first."))
-
-    if len(moves) >= 3:
-        straight = _path_straightness(moves)
-        if straight is not None and straight > 0.97:
-            out.append(Signal("behavior", "behavior.linear_path", 2.0,
-                              "The pointer path is a straight line. Ratio %.3f." % straight))
-        elif straight is not None and straight < 0.85:
-            out.append(Signal("behavior", "behavior.human_path_curvature", -0.9,
-                              "The pointer path curves as a hand does. Ratio %.3f." % straight))
-
-        deltas = [b["t"] - a["t"] for a, b in zip(moves, moves[1:]) if b["t"] > a["t"]]
-        if len(deltas) >= 5:
-            spread = statistics.pstdev(deltas)
-            if spread < 1.5:
-                out.append(Signal("behavior", "behavior.uniform_timing", 1.8,
-                                  "The pointer events arrive on a fixed clock. Spread %.2f ms." % spread))
-            unique = len(set(round(d) for d in deltas))
-            if unique <= 2:
-                out.append(Signal("behavior", "behavior.quantized_timing", 1.5,
-                                  "The pointer events use %d distinct intervals." % unique))
-
-    if len(keys) >= 4:
-        spread = statistics.pstdev(keys)
-        if spread < 5:
-            out.append(Signal("behavior", "behavior.uniform_keystrokes", 1.6,
-                              "The keystroke intervals are near constant. Spread %.2f ms." % spread))
-
-    first = beh.get("first_interaction_ms")
-    if first is not None and first < 60:
-        out.append(Signal("behavior", "behavior.instant_interaction", 1.4,
-                          "The first interaction came %d ms after load." % first))
-    return out
-
+    return [Signal("behavior", f["id"], f["weight"], f["detail"])
+            for f in behavior.findings(session.get("behavior"), metrics)]
 
 
 # ---------------------------------------------------------------- runtime
@@ -406,6 +367,26 @@ def score_runtime(session):
 
 # ------------------------------------------------------------ environment
 
+def _media_kinds(env):
+    """Return {kind: count} for the enumerated media devices.
+
+    Prefer the object the collector sends. Fall back to parsing the
+    "audioinput:1,videoinput:1" string, so a run logged before the object
+    existed still scores on its device kinds rather than losing them.
+    """
+    kinds = env.get("media_devices")
+    if isinstance(kinds, dict):
+        return {str(name): value for name, value in kinds.items()
+                if isinstance(value, int)}
+
+    out = {}
+    for part in (env.get("media_device_kinds") or "").split(","):
+        name, _, count = part.partition(":")
+        if name.strip() and count.strip().isdigit():
+            out[name.strip()] = int(count)
+    return out
+
+
 def score_environment(session):
     """Check the capabilities that a desktop install has and a container lacks.
 
@@ -420,11 +401,31 @@ def score_environment(session):
     family = reference.ua_family(session.get("headers", {}).get("user-agent", ""))
 
     devices = env.get("media_device_count")
+    kinds = _media_kinds(env)
     if devices == 0:
         out.append(Signal("environment", "environment.no_media_devices", 1.6,
                           "The browser enumerated no camera and no microphone. A desktop "
                           "install reports at least one."))
+    elif devices and kinds:
+        # Which devices, not how many. enumerateDevices reports the kind of each
+        # device before permission is granted, so this reads real hardware: a
+        # container has no sound card to enumerate a microphone from.
+        microphones = kinds.get("audioinput", 0)
+        cameras = kinds.get("videoinput", 0)
+        speakers = kinds.get("audiooutput", 0)
+        if microphones:
+            out.append(Signal("environment", "environment.microphone_present", -0.8,
+                              "The machine has %d microphone(s). A headless container "
+                              "enumerates none." % microphones))
+        if cameras:
+            out.append(Signal("environment", "environment.camera_present", -0.5,
+                              "The machine has %d camera(s)." % cameras))
+        if speakers and not microphones and not cameras:
+            out.append(Signal("environment", "environment.audio_output_only", -0.2,
+                              "The machine enumerated %d audio output(s) and no input "
+                              "device." % speakers))
     elif devices:
+        # An older run recorded the count but not the kinds.
         out.append(Signal("environment", "environment.media_devices_present", -0.5,
                           "The browser enumerated %d media devices." % devices))
 
@@ -527,11 +528,31 @@ def score_consistency(session):
         out.append(Signal("consistency", "consistency.chrome_ua_without_grease", 3.0,
                           "The User-Agent claims Chrome. The TLS handshake sends no GREASE."))
 
-    renderer = (fp.get("webgl_renderer") or "").lower()
-    if renderer and claimed_platform in ("windows", "macos"):
-        if any(m in renderer for m in reference.SOFTWARE_RENDERER_MARKERS):
+    if claimed_platform in ("windows", "macos"):
+        gpu = reference.gpu_class(fp.get("webgl_vendor"), fp.get("webgl_renderer"))
+        if gpu == "software":
             out.append(Signal("consistency", "consistency.desktop_without_gpu", 2.0,
-                              "The client claims a desktop system but renders in software."))
+                              "The client claims a desktop system but draws on the CPU. A "
+                              "desktop with a screen has a GPU and uses it."))
+
+    # Which fonts resolved is a fact about the machine. A User-Agent is a claim
+    # about it. Fire only when the claimed platform's fonts are all absent and
+    # another platform's are present, so a machine that simply carries few
+    # fonts is not accused of lying.
+    resolved = {str(name).lower() for name in (fp.get("fonts") or [])}
+    if resolved and claimed_platform in reference.PLATFORM_FONTS:
+        expected = [f for f in reference.PLATFORM_FONTS[claimed_platform] if f in resolved]
+        foreign = {other: [f for f in names if f in resolved]
+                   for other, names in reference.PLATFORM_FONTS.items()
+                   if other != claimed_platform}
+        contradicting = {other: found for other, found in foreign.items() if found}
+        if not expected and contradicting:
+            other, found = sorted(contradicting.items())[0]
+            out.append(Signal("consistency", "consistency.font_platform_mismatch", 2.1,
+                              "The User-Agent claims %s, but no %s font resolved and these "
+                              "%s fonts did: %s."
+                              % (claimed_platform, claimed_platform, other,
+                                 ", ".join(sorted(found)[:4]))))
 
     if reference.ua_is_mobile(user_agent) and fp.get("screen_width", 0) > 1200:
         out.append(Signal("consistency", "consistency.mobile_ua_desktop_screen", 2.3,
@@ -598,15 +619,9 @@ def evaluate(session, calibration=None):
             earliest = name
             break
 
-    verdict = VERDICT_BANDS[-1][1]
-    for ceiling, band in VERDICT_BANDS:
-        if score <= ceiling:
-            verdict = band
-            break
-
     return {
         "score": score,
-        "verdict": verdict,
+        "verdict": verdict_for(score),
         "total_weight": round(total, 3),
         "first_catching_layer": earliest,
         "strongest_layer": strongest,

@@ -306,9 +306,9 @@ def _analyse_keys(events, duration_ms):
 def analyse(beh):
     """Return every derived metric for one session's telemetry.
 
-    Only the task page sends raw events. The extension sends a summary in an
-    older shape, where `clicks` is a count rather than a list, so leave it
-    alone and let the legacy path in `scoring.py` read it.
+    Return None for anything that is not the raw event stream the task page
+    sends. `findings` reads that as a session with no interaction data rather
+    than guessing at an unknown shape.
     """
     if not beh or (beh.get("version") != 2 and "pointer" not in beh):
         return None
@@ -389,7 +389,7 @@ def findings(beh, metrics):
                             "The client clicked %d times without moving the pointer at all."
                             % clicks["count"]))
     elif count and clicks.get("moves_before_first", 1) == 0:
-        out.append(_finding("behavior.click_without_approach", 2.2,
+        out.append(_finding("behavior.click_before_first_move", 2.2,
                             "The first click landed before the pointer had moved once."))
 
     approach = clicks.get("approach_median")

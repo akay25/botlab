@@ -41,11 +41,55 @@ CHROMIUM_REQUIRED_HEADERS = [
     "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "accept-language",
 ]
 
-# Software renderers. A headless browser with no GPU reports one of these.
+# Software renderers. A headless browser with no GPU reports one of these, and
+# the machine is then drawing on the CPU rather than on a graphics card.
 SOFTWARE_RENDERER_MARKERS = [
     "swiftshader", "llvmpipe", "software rasterizer", "mesa offscreen",
     "google inc. (google)", "virgl", "microsoft basic render",
+    "lavapipe", "softpipe", "swrast", "d3d11 warp", "apple software renderer",
 ]
+
+# Strings that name real silicon. A machine drawing on a GPU reports one of
+# these in the vendor or the renderer, and no software rasterizer does.
+HARDWARE_GPU_MARKERS = [
+    "nvidia", "geforce", "quadro", "rtx ", "gtx ",
+    "radeon", "amd ", "firepro",
+    "intel", "iris", "hd graphics", "uhd graphics", "arc ",
+    "apple m1", "apple m2", "apple m3", "apple m4", "apple gpu", "apple a",
+    "adreno", "mali", "powervr", "videocore",
+]
+
+
+def gpu_class(vendor, renderer):
+    """Return whether WebGL is drawing on a GPU, on the CPU, or unknown.
+
+    Read both strings. Chrome reports the adapter through ANGLE, so the vendor
+    carries "Google Inc. (NVIDIA)" while the renderer carries the board name,
+    and a software build names SwiftShader in one or the other.
+
+    Software is checked first. A rasterizer string never names a real card, but
+    the machine it runs on may put its own name nearby, so testing hardware
+    first would read a CPU renderer as a GPU.
+    """
+    text = ("%s %s" % (vendor or "", renderer or "")).lower()
+    if not text.strip():
+        return "unknown"
+    if any(marker in text for marker in SOFTWARE_RENDERER_MARKERS):
+        return "software"
+    if any(marker in text for marker in HARDWARE_GPU_MARKERS):
+        return "hardware"
+    return "unknown"
+
+
+# Fonts that ship with one desktop platform and not the others. The collector
+# probes for these by name, so a resolved font is evidence about the machine
+# rather than about what the User-Agent claims. Keep every name here inside
+# FONT_PROBES in the collector, or it can never be resolved.
+PLATFORM_FONTS = {
+    "windows": ["segoe ui", "calibri", "cambria", "candara",
+                "franklin gothic medium", "palatino linotype"],
+    "macos": ["menlo", "optima", "helvetica neue"],
+}
 
 # Substrings that appear in the User-Agent of an unmodified automation client.
 DECLARED_AUTOMATION_MARKERS = [

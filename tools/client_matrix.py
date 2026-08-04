@@ -4,9 +4,9 @@ The matrix shows the central finding. A client can spoof the User-Agent and
 still fail at the TLS layer, because the handshake happens before any header
 arrives.
 
-These clients run no JavaScript and load no extension, so they are scored on
-the network, TLS, HTTP and consistency layers alone. Add the browser rows by
-loading the extension in each browser with its own run label.
+These clients run no JavaScript, so they are scored on the network, TLS, HTTP
+and consistency layers alone. Add the browser rows by driving the task page
+with each browser under its own run label.
 
 Start the backend first. Then run:
   python3 client_matrix.py --url https://127.0.0.1:8443
@@ -149,8 +149,8 @@ def main():
 
     print_table(rows)
     print("\nEvery client above spoofs headers only. The TLS layer sees the real client.")
-    print("Add the browser rows by loading the extension in a real browser and in a stealth")
-    print("browser, with one run label per client, and sending each report to this backend.")
+    print("Add the browser rows by driving the task page with a real browser and with a")
+    print("stealth browser, one run label per client, against this same harness.")
 
     if args.csv:
         import csv
