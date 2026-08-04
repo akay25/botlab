@@ -72,6 +72,29 @@
            color:var(--paper); cursor:pointer; }
   button.ghost { background:transparent; color:var(--ink); }
   .empty { padding:40px 0; color:var(--mute); text-align:center; border:1px dashed var(--rule); }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(112px,1fr));
+           gap:8px; margin-bottom:12px; }
+  .tile { border:1px solid var(--rule); background:var(--panel); padding:9px 11px; }
+  .tile b { display:block; font-family:var(--mono); font-size:9.5px; letter-spacing:.15em;
+            text-transform:uppercase; color:var(--mute); font-weight:600; margin-bottom:4px; }
+  .tile span { font-family:var(--mono); font-size:19px; font-variant-numeric:tabular-nums; }
+  .tile span.bad { color:var(--bot); }
+  .tile span.good { color:var(--human); }
+  .typed { font-family:var(--mono); font-size:12.5px; background:var(--panel);
+           border:1px solid var(--rule); padding:9px 11px; margin-bottom:12px;
+           word-break:break-all; color:var(--ink); }
+  .trace { width:100%; height:auto; display:block; background:var(--panel);
+           border:1px solid var(--rule); }
+  .trace-wrap { overflow-x:auto; }
+  .legend { display:flex; gap:0 20px; flex-wrap:wrap; margin-top:10px;
+            font-family:var(--mono); font-size:10.5px; letter-spacing:.1em;
+            text-transform:uppercase; color:var(--mute); }
+  .legend span { display:flex; align-items:center; gap:6px; }
+  .legend i { width:16px; height:0; border-top-width:3px; border-top-style:solid;
+              display:inline-block; }
+  .legend i.dot { width:8px; height:8px; border-radius:50%; border:none; }
+  .legend i.ring { width:9px; height:9px; border-radius:50%; border:1.5px dashed var(--mute);
+                   border-top-style:dashed; }
   @media (max-width:760px) { .two { grid-template-columns:1fr; } .num { font-size:56px; } }
   @media print { body { background:#fff; } .noprint { display:none; } }
 </style>
@@ -164,6 +187,297 @@
 
   function signed(value) { return (value > 0 ? "+" : "") + value.toFixed(1); }
 
+  /* ------------------------------------------------------- pointer trace */
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  /* Keep in step with TELEPORT_PX in src/detection/behavior.py, so a jump drawn
+     in red here is the same jump the scorer charged as behavior.pointer_teleport. */
+  var TELEPORT_PX = 150;
+  var TARGET_RADIUS = 28;          // the task page draws 56 px circles
+
+  function svg(tag, attrs) {
+    var node = document.createElementNS(SVG_NS, tag);
+    Object.keys(attrs || {}).forEach(function (key) {
+      node.setAttribute(key, attrs[key]);
+    });
+    return node;
+  }
+
+  function trace(behavior, fp) {
+    var points = (behavior || {}).pointer || [];
+    var clicks = (behavior || {}).clicks || [];
+    var targets = (behavior || {}).targets || [];
+    if (!points.length && !clicks.length) { return null; }
+
+    /* Draw in the client's own viewport coordinates, so the picture is where
+       the pointer actually was rather than a normalised abstraction. Start from
+       the reported window and widen it to hold anything that fell outside. */
+    var minX = 0, minY = 0;
+    var maxX = Number((fp || {}).inner_width) || 0;
+    var maxY = Number((fp || {}).inner_height) || 0;
+    var every = points.concat(clicks).concat(targets.map(function (t) {
+      return { x: t.cx, y: t.cy };
+    }));
+    every.forEach(function (p) {
+      var x = Number(p.x), y = Number(p.y);
+      if (isFinite(x)) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); }
+      if (isFinite(y)) { minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
+    });
+    if (maxX - minX < 10) { maxX = minX + 10; }
+    if (maxY - minY < 10) { maxY = minY + 10; }
+
+    var pad = Math.max(12, (maxX - minX) * 0.02);
+    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+    var width = maxX - minX, height = maxY - minY;
+    var unit = Math.max(width, height) / 320;   // keeps marks the same visual size
+
+    var root = svg("svg", {
+      "class": "trace",
+      viewBox: minX + " " + minY + " " + width + " " + height,
+      preserveAspectRatio: "xMidYMid meet",
+      role: "img",
+      "aria-label": "The path the pointer travelled during this run"
+    });
+
+    // The reported window, for scale.
+    if (Number((fp || {}).inner_width) && Number((fp || {}).inner_height)) {
+      root.appendChild(svg("rect", {
+        x: 0, y: 0, width: fp.inner_width, height: fp.inner_height,
+        fill: "none", stroke: "var(--rule)", "stroke-width": unit,
+        "stroke-dasharray": (unit * 6) + " " + (unit * 5)
+      }));
+    }
+
+    // Where the task's targets sat, so an approach can be read against them.
+    targets.forEach(function (t) {
+      root.appendChild(svg("circle", {
+        cx: t.cx, cy: t.cy, r: TARGET_RADIUS, fill: "none",
+        stroke: "var(--mute)", "stroke-width": unit * 1.2,
+        "stroke-dasharray": (unit * 4) + " " + (unit * 4)
+      }));
+    });
+
+    // The path, broken wherever the pointer jumped with no event in between.
+    var moved = "";
+    var teleports = 0;
+    var travelled = 0;
+    for (var i = 0; i < points.length; i++) {
+      var p = points[i];
+      if (i === 0) { moved += "M" + p.x + "," + p.y; continue; }
+      var previous = points[i - 1];
+      var step = Math.sqrt(Math.pow(p.x - previous.x, 2) + Math.pow(p.y - previous.y, 2));
+      travelled += step;
+      if (step > TELEPORT_PX) {
+        teleports += 1;
+        root.appendChild(svg("line", {
+          x1: previous.x, y1: previous.y, x2: p.x, y2: p.y,
+          stroke: "var(--bot)", "stroke-width": unit * 1.4,
+          "stroke-dasharray": (unit * 5) + " " + (unit * 4), opacity: "0.85"
+        }));
+        moved += "M" + p.x + "," + p.y;
+      } else {
+        moved += "L" + p.x + "," + p.y;
+      }
+    }
+    if (moved) {
+      root.appendChild(svg("path", {
+        d: moved, fill: "none", stroke: "var(--human)",
+        "stroke-width": unit * 1.6, "stroke-linejoin": "round",
+        "stroke-linecap": "round", opacity: "0.9"
+      }));
+    }
+
+    /* One dot per recorded event. This is the density the scorer reads: a hand
+       reporting at 60 Hz leaves a dense trail, and a driver that places the
+       pointer at its destination leaves almost nothing. */
+    points.forEach(function (p) {
+      root.appendChild(svg("circle", {
+        cx: p.x, cy: p.y, r: unit * 1.3, fill: "var(--ink)", opacity: "0.5"
+      }));
+    });
+
+    if (points.length) {
+      root.appendChild(svg("circle", {
+        cx: points[0].x, cy: points[0].y, r: unit * 4, fill: "none",
+        stroke: "var(--warn)", "stroke-width": unit * 1.6
+      }));
+    }
+
+    clicks.forEach(function (c, index) {
+      root.appendChild(svg("circle", {
+        cx: c.x, cy: c.y, r: unit * 4.5, fill: "var(--ink)"
+      }));
+      var label = svg("text", {
+        x: Number(c.x) + unit * 7, y: Number(c.y) - unit * 5,
+        fill: "var(--ink)", "font-size": unit * 11,
+        "font-family": "ui-monospace, monospace"
+      });
+      label.textContent = String(index + 1);
+      root.appendChild(label);
+    });
+
+    var wrap = el("div", "trace-wrap");
+    wrap.appendChild(root);
+
+    var legend = el("div", "legend");
+    [["path travelled", "var(--human)", "line"],
+     ["jump over " + TELEPORT_PX + " px", "var(--bot)", "line"],
+     ["one recorded event", "var(--ink)", "dot"],
+     ["click", "var(--ink)", "dot"],
+     ["first event", "var(--warn)", "line"],
+     ["task target", "var(--mute)", "ring"]].forEach(function (item) {
+      var entry = el("span");
+      var swatch = el("i", item[2] === "line" ? null : item[2]);
+      if (item[2] === "dot") { swatch.style.background = item[1]; }
+      else if (item[2] === "ring") { swatch.style.borderColor = item[1]; }
+      else { swatch.style.borderTopColor = item[1]; }
+      entry.appendChild(swatch);
+      entry.appendChild(el("span", null, item[0]));
+      legend.appendChild(entry);
+    });
+
+    var host = el("div");
+    host.appendChild(wrap);
+    host.appendChild(legend);
+    host.appendChild(el("p", "hint",
+      points.length + " pointer events over " + Math.round(travelled) + " px"
+      + (travelled >= 1
+         ? ", " + (points.length / (travelled / 100)).toFixed(1) + " per 100 px"
+         : "")
+      + ", " + clicks.length + " click(s), " + teleports + " jump(s)."));
+    return host;
+  }
+
+  /* ---------------------------------------------------- keystroke timing */
+
+  function tile(label, value, tone) {
+    var node = el("div", "tile");
+    node.appendChild(el("b", null, label));
+    node.appendChild(el("span", tone || null, value));
+    return node;
+  }
+
+  function polyline(series, pick, width, height, pad, count, top, colour) {
+    /* Build one line, broken wherever a keystroke has no value for it: the
+       first key has no flight, and a key never released has no dwell. */
+    var d = "";
+    var dots = [];
+    var open = false;
+    series.forEach(function (entry, index) {
+      var value = pick(entry);
+      if (value === null || value === undefined || !isFinite(value)) {
+        open = false;
+        return;
+      }
+      var x = pad.l + (count < 2 ? 0 : (index / (count - 1)) * (width - pad.l - pad.r));
+      var y = height - pad.b - (Math.min(value, top) / top) * (height - pad.t - pad.b);
+      d += (open ? "L" : "M") + x.toFixed(1) + "," + y.toFixed(1);
+      open = true;
+      dots.push([x, y]);
+    });
+    var group = svg("g", {});
+    if (d) {
+      group.appendChild(svg("path", {
+        d: d, fill: "none", stroke: colour, "stroke-width": "2",
+        "stroke-linejoin": "round", "stroke-linecap": "round"
+      }));
+    }
+    dots.forEach(function (p) {
+      group.appendChild(svg("circle", { cx: p[0], cy: p[1], r: "2.4", fill: colour }));
+    });
+    return group;
+  }
+
+  function keystrokes(keys) {
+    var series = (keys || {}).series || [];
+    if (series.length < 2) { return null; }
+
+    var host = el("div");
+
+    /* The numbers the chart is made of, so a reader does not have to measure
+       the picture to get them. */
+    var tiles = el("div", "tiles");
+    var flightCv = keys.flight_cv, dwellCv = keys.dwell_cv;
+    tiles.appendChild(tile("keys", String(keys.down_count || series.length)));
+    tiles.appendChild(tile("flight mean", Math.round(keys.flight_ms_mean || 0) + " ms"));
+    tiles.appendChild(tile("dwell mean", Math.round(keys.dwell_ms_mean || 0) + " ms"));
+    if (flightCv !== null && flightCv !== undefined) {
+      tiles.appendChild(tile("flight variation", Math.round(flightCv * 100) + "%",
+        flightCv < 0.15 ? "bad" : "good"));
+    }
+    if (dwellCv !== null && dwellCv !== undefined) {
+      tiles.appendChild(tile("dwell variation", Math.round(dwellCv * 100) + "%",
+        dwellCv < 0.12 ? "bad" : "good"));
+    }
+    tiles.appendChild(tile("untrusted", String(keys.untrusted || 0),
+      keys.untrusted ? "bad" : null));
+    host.appendChild(tiles);
+
+    var typed = series.map(function (entry) {
+      var key = entry.key || "";
+      return key.length === 1 ? key : "⟨" + key + "⟩";
+    }).join("");
+    host.appendChild(el("div", "typed", typed));
+
+    var W = 1000, H = 330;
+    var pad = { l: 46, r: 12, t: 12, b: 30 };
+    var top = 0;
+    series.forEach(function (entry) {
+      top = Math.max(top, entry.dwell || 0, entry.flight || 0);
+    });
+    top = Math.max(50, Math.ceil(top / 50) * 50);
+
+    var chart = svg("svg", {
+      "class": "trace", viewBox: "0 0 " + W + " " + H,
+      preserveAspectRatio: "xMidYMid meet", role: "img",
+      "aria-label": "Dwell and flight time for every keystroke, in milliseconds"
+    });
+
+    [0, 0.25, 0.5, 0.75, 1].forEach(function (fraction) {
+      var y = H - pad.b - fraction * (H - pad.t - pad.b);
+      chart.appendChild(svg("line", {
+        x1: pad.l, y1: y, x2: W - pad.r, y2: y,
+        stroke: "var(--rule)", "stroke-width": "1"
+      }));
+      var label = svg("text", {
+        x: pad.l - 8, y: y + 4, "text-anchor": "end", fill: "var(--mute)",
+        "font-size": "11", "font-family": "ui-monospace, monospace"
+      });
+      label.textContent = String(Math.round(fraction * top));
+      chart.appendChild(label);
+    });
+
+    var count = series.length;
+    chart.appendChild(polyline(series, function (e) { return e.flight; },
+      W, H, pad, count, top, "var(--warn)"));
+    chart.appendChild(polyline(series, function (e) { return e.dwell; },
+      W, H, pad, count, top, "var(--human)"));
+
+    var axis = svg("text", {
+      x: pad.l, y: H - 8, fill: "var(--mute)", "font-size": "11",
+      "font-family": "ui-monospace, monospace"
+    });
+    axis.textContent = "keystroke 1 → " + count + "   (milliseconds up the side)";
+    chart.appendChild(axis);
+
+    var wrap = el("div", "trace-wrap");
+    wrap.appendChild(chart);
+    host.appendChild(wrap);
+
+    var legend = el("div", "legend");
+    [["flight, gap between key presses", "var(--warn)"],
+     ["dwell, how long each key was held", "var(--human)"]].forEach(function (item) {
+      var entry = el("span");
+      var swatch = el("i");
+      swatch.style.borderTopColor = item[1];
+      entry.appendChild(swatch);
+      entry.appendChild(el("span", null, item[0]));
+      legend.appendChild(entry);
+    });
+    host.appendChild(legend);
+    return host;
+  }
+
   function ladder(layers, caught) {
     var host = el("div", "ladder");
     var peak = 4;
@@ -254,7 +568,32 @@
       + "detection IDs, not only the score: an ID names what was measured, and a "
       + "score is one number a reader cannot check."));
 
+    var drawn = trace(data.behavior, data.js);
+    if (drawn) {
+      host.appendChild(section("How the pointer moved", drawn,
+        "The path the pointer actually travelled, in the client's own viewport "
+        + "coordinates. Read the dots before the line: each one is a single recorded "
+        + "event, so a dense trail means a device reporting continuously, and a line "
+        + "with almost no dots on it means the pointer was placed rather than moved. "
+        + "A hand bows away from the straight line between two points and corrects "
+        + "itself as it arrives; an interpolation runs dead straight and lands exactly. "
+        + "Red dashes are jumps of over " + TELEPORT_PX + " px with no event in between."));
+    }
+
     var metrics = result.behavior_metrics;
+    if (metrics) {
+      var typing = keystrokes(metrics.keys);
+      if (typing) {
+        host.appendChild(section("How the keyboard was typed on", typing,
+          "Dwell is how long each key was held down; flight is the gap from the "
+          + "previous key press to this one. A hand produces two ragged lines: hold "
+          + "times differ by finger and by key, and the gaps stretch at word "
+          + "boundaries and after punctuation, then close up inside a familiar word. "
+          + "A driver that sleeps a fixed interval between keys draws two nearly "
+          + "flat lines. The variation figures are the spread divided by the mean, "
+          + "which is the comparison that holds whether the typist is fast or slow."));
+      }
+    }
     if (metrics) {
       var grid = el("div", "two");
       var left = el("div");

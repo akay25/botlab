@@ -134,6 +134,24 @@ presses, each with mean and spread; whether any key was held for zero time;
 typing speed; whether `keypress` fired at all; and whether text arrived with no
 key event, which is what `fill()` and `Input.insertText` produce.
 
+Both are also kept as a per-keystroke series, one entry per press in the order
+it was typed, so the report can draw the timing of every key and a reader can
+recompute any point of it. The report's **How the keyboard was typed on** chart
+draws that series as two lines. A hand makes both ragged: hold times differ by
+finger and by key, and the gaps stretch at word boundaries and after punctuation
+then close up inside a familiar word. A driver that sleeps a fixed interval
+between keys draws two almost flat lines.
+
+The judgement uses spread divided by the mean rather than raw milliseconds,
+because a fixed threshold misreads fast and slow typists in opposite directions:
+8 ms of variation is nothing around a 200 ms mean and a great deal around a
+20 ms one. Below `MIN_HUMAN_FLIGHT_CV` the run carries
+`behavior.metronomic_typing_rhythm`, and below `MIN_HUMAN_DWELL_CV`,
+`behavior.metronomic_dwell`. These catch the driver that jitters its delay by a
+few milliseconds around a fixed value — not identical, so the older
+`constant_typing_rhythm` and `uniform_keystrokes` rules both miss it, but far
+too even for a hand.
+
 Movements are judged one at a time. A path that visits three targets in three
 corners is bent by the task, not by a hand, so a whole-session straightness
 ratio says nothing.
@@ -171,6 +189,29 @@ permission is granted; only the labels stay blank. A microphone scores
 `environment.microphone_present` at −0.8 and a camera
 `environment.camera_present` at −0.5, because a container has no sound card to
 enumerate one from. No devices at all remains `environment.no_media_devices`.
+
+**DRM.** Widevine is a signed binary that ships with released browsers and with
+the Chromium builds a distribution signs. The plain Chromium that Playwright and
+Puppeteer download carries no CDM, and no patch installs one, which puts it in
+the same class as the licensed codecs. Holding one scores
+`environment.widevine_present` at −1.0, with a further −0.5 for
+`environment.widevine_hardware_backed` when the CDM grants an `HW_` robustness
+level, since that means the keys never leave a trusted execution environment.
+
+Clear Key is the control, and it is what makes the absence readable. The EME
+specification mandates Clear Key and it needs no licensed component, so a client
+that grants Clear Key and refuses Widevine is an engine doing EME with nothing
+behind it: `environment.no_widevine` at +2.0. Reading Widevine on its own could
+not tell that apart from a browser with EME disabled. Granting no key system at
+all, not even Clear Key, is `environment.no_key_systems` at +1.2.
+
+Three cases are deliberately not charged. Safari uses FairPlay and Firefox
+fetches its module on first use, so a missing Widevine outside Chrome is
+`environment.no_widevine_expected` at weight 0. EME is gated on a secure
+context, so with `TLS_ENABLED=false` the API is absent for a reason that has
+nothing to do with the client, and a query that never answers is not a refusal —
+both become `environment.drm_not_measured` at weight 0, on the same principle as
+`tls.not_measured`.
 
 Both new thresholds are named constants at the top of `src/detection/scoring.py`
 and are reasoned rather than measured, so limit 7 below applies to them exactly

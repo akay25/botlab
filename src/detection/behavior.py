@@ -32,6 +32,14 @@ ZERO_DWELL_MS = 1.0
 # the mean near 100 ms; anything under about 25 ms is not a finger. Measure
 # your own control group and change these before reporting a result.
 HUMAN_DWELL_MS = (25, 200)
+# Spread divided by mean, below which a timing series is too even to be a hand.
+# A driver that sleeps a fixed interval between keys lands near zero; published
+# keystroke-dynamics work puts human flight variation far above these. They are
+# reasoned, not measured: set them from your own control group before reporting.
+MIN_HUMAN_FLIGHT_CV = 0.15
+MIN_HUMAN_DWELL_CV = 0.12
+# Below this many presses the spread of a series means nothing.
+MIN_TIMING_SAMPLES = 5
 # The window before a click in which a hand is still approaching the target.
 APPROACH_MS = 250.0
 # Below this sampling density a path has no readable shape, only endpoints.
@@ -265,19 +273,33 @@ def _analyse_keys(events, duration_ms):
     if not downs:
         return out
 
-    # Match each release to the most recent unmatched press of the same key.
-    pending = {}
-    dwells = []
+    # Match each release to the most recent unmatched press of the same key, and
+    # keep the pairing in press order so every dwell stays attached to the key
+    # it belongs to. The report draws the series from this; the aggregates below
+    # are order-independent and unchanged by it.
+    pending: dict = {}
+    presses = []
     for event in sorted(events, key=lambda e: float(e.get("t", 0))):
         code = event.get("code") or event.get("key")
         if event.get("type") == "down":
-            pending.setdefault(code, []).append(float(event.get("t", 0)))
+            record = {
+                "t": float(event.get("t", 0)),
+                "key": str(event.get("key", "")),
+                "dwell": None,
+                "flight": None,
+            }
+            presses.append(record)
+            pending.setdefault(code, []).append(record)
         elif event.get("type") == "up" and pending.get(code):
-            dwells.append(float(event.get("t", 0)) - pending[code].pop(0))
+            record = pending[code].pop(0)
+            record["dwell"] = float(event.get("t", 0)) - record["t"]
 
+    for previous, current in zip(presses, presses[1:]):
+        current["flight"] = current["t"] - previous["t"]
+
+    dwells = [r["dwell"] for r in presses if r["dwell"] is not None]
+    flights = [r["flight"] for r in presses if r["flight"] is not None]
     ordered = sorted(downs, key=lambda e: float(e.get("t", 0)))
-    flights = [float(b.get("t", 0)) - float(a.get("t", 0))
-               for a, b in zip(ordered, ordered[1:])]
 
     out["dwell_count"] = len(dwells)
     out["dwell_ms_mean"] = round(_mean(dwells), 2)
@@ -289,6 +311,27 @@ def _analyse_keys(events, duration_ms):
     out["flight_ms_stdev"] = round(_stdev(flights), 2)
     out["constant_flight_share"] = round(_modal_share(flights, 1), 3)
     out["distinct_flights"] = len({_round_key(f, 1) for f in flights})
+
+    # Spread relative to the mean. Raw spread cannot be judged on its own: 8 ms
+    # of variation is nothing around a 200 ms mean and a great deal around a
+    # 20 ms one, so a fixed millisecond threshold misreads slow and fast typists
+    # in opposite directions. This is the number that says "metronome".
+    out["dwell_cv"] = (round(_stdev(dwells) / _mean(dwells), 4)
+                       if dwells and _mean(dwells) > 0 else None)
+    out["flight_cv"] = (round(_stdev(flights) / _mean(flights), 4)
+                        if flights and _mean(flights) > 0 else None)
+
+    # One entry per key press, in the order it was typed, so the report can draw
+    # the timing of every keystroke and a reader can recompute any point of it.
+    out["series"] = [
+        {
+            "i": index,
+            "key": record["key"],
+            "dwell": round(record["dwell"], 2) if record["dwell"] is not None else None,
+            "flight": round(record["flight"], 2) if record["flight"] is not None else None,
+        }
+        for index, record in enumerate(presses)
+    ]
 
     printable = [e for e in ordered if len(str(e.get("key", ""))) == 1]
     out["printable_count"] = len(printable)
@@ -537,6 +580,14 @@ def findings(beh, metrics):
                                     "Keys were held for %.1f ms on average. A finger holds a "
                                     "key for roughly %d to %d ms."
                                     % (dwell_mean, HUMAN_DWELL_MS[0], HUMAN_DWELL_MS[1])))
+            elif (keys.get("dwell_cv") is not None
+                  and keys.get("dwell_count", 0) >= MIN_TIMING_SAMPLES
+                  and keys["dwell_cv"] < MIN_HUMAN_DWELL_CV):
+                out.append(_finding("behavior.metronomic_dwell", 1.8,
+                                    "Hold times barely move around their own mean: %.0f ms "
+                                    "give or take %.0f, a variation of %.0f%%. Fingers do not "
+                                    "hold keys this evenly."
+                                    % (dwell_mean, dwell_spread, keys["dwell_cv"] * 100)))
             elif dwell_mean > HUMAN_DWELL_MS[1] * 2:
                 out.append(_finding("behavior.long_dwell", 1.2,
                                     "Keys were held for %.0f ms on average, far longer than "
@@ -553,6 +604,17 @@ def findings(beh, metrics):
                                     "%.0f%% of gaps between keys were identical. A typist has "
                                     "no such metronome."
                                     % (keys["constant_flight_share"] * 100)))
+            elif (keys.get("flight_cv") is not None
+                  and keys["flight_cv"] < MIN_HUMAN_FLIGHT_CV):
+                # Catches the driver that jitters its delay by a few milliseconds
+                # around a fixed value: not identical, so the share check above
+                # misses it, but far too even for a hand.
+                out.append(_finding("behavior.metronomic_typing_rhythm", 2.0,
+                                    "The gaps between keys hold to %.0f ms give or take %.0f, "
+                                    "a variation of %.0f%%. Typing wanders far more than that "
+                                    "between letters, words and punctuation."
+                                    % (keys.get("flight_ms_mean", 0), flight_spread,
+                                       keys["flight_cv"] * 100)))
             elif flight_spread < 5:
                 out.append(_finding("behavior.uniform_keystrokes", 1.6,
                                     "The gaps between keys barely vary. Spread %.2f ms."

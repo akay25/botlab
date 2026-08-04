@@ -478,6 +478,79 @@
     });
   }
 
+  /* Key systems worth asking about. Clear Key is the control: the EME spec
+     mandates it and it needs no licensed component, so a client that grants
+     Clear Key and refuses Widevine is running an engine that does EME with no
+     DRM module behind it. That is the plain Chromium automation downloads. */
+  var DRM_SYSTEMS = [
+    ["widevine", "com.widevine.alpha"],
+    ["playready", "com.microsoft.playready"],
+    ["fairplay", "com.apple.fps.1_0"],
+    ["clearkey", "org.w3.clearkey"]
+  ];
+
+  /* Widevine robustness levels, weakest first. SW_ is a software decrypt path;
+     HW_ means the keys never leave the trusted execution environment, which a
+     container has no access to. */
+  var WIDEVINE_ROBUSTNESS = ["SW_SECURE_CRYPTO", "SW_SECURE_DECODE",
+    "HW_SECURE_CRYPTO", "HW_SECURE_DECODE", "HW_SECURE_ALL"];
+
+  function probeDrm() {
+    var out = {
+      secure_context: window.isSecureContext === true,
+      eme_supported: typeof navigator.requestMediaKeySystemAccess === "function",
+      key_systems: {},
+      widevine_robustness: null
+    };
+    /* EME is gated on a secure context. Over plain HTTP the API is simply
+       absent, which says nothing about the client, so record why. */
+    if (!out.eme_supported) { return Promise.resolve(out); }
+
+    function ask(system, robustness) {
+      /* Offer VP8 as well as H.264 so this does not quietly re-test whether the
+         build carries the licensed codecs. That is a separate probe. */
+      var video = [{ contentType: 'video/webm; codecs="vp8"' },
+                   { contentType: 'video/mp4; codecs="avc1.42E01E"' }];
+      if (robustness) {
+        video = video.map(function (c) {
+          return { contentType: c.contentType, robustness: robustness };
+        });
+      }
+      var config = [{
+        initDataTypes: ["cenc", "webm", "keyids"],
+        videoCapabilities: video
+      }];
+      var attempt;
+      try {
+        attempt = navigator.requestMediaKeySystemAccess(system, config).then(
+          function () { return true; }, function () { return false; });
+      } catch (err) { return Promise.resolve(false); }
+      /* null means the question was never answered, which is not the same as a
+         refusal, so the server can decline to read anything into it. */
+      return withTimeout(attempt, 1500, null);
+    }
+
+    return Promise.all(DRM_SYSTEMS.map(function (entry) {
+      return ask(entry[1], "").then(function (state) { return [entry[0], state]; });
+    })).then(function (pairs) {
+      pairs.forEach(function (pair) { out.key_systems[pair[0]] = pair[1]; });
+      if (out.key_systems.widevine !== true) { return out; }
+
+      // Walk down from the strongest level and keep the first one granted.
+      var levels = WIDEVINE_ROBUSTNESS.slice().reverse();
+      var index = 0;
+      function next() {
+        if (index >= levels.length) { return out; }
+        var level = levels[index++];
+        return ask("com.widevine.alpha", level).then(function (granted) {
+          if (granted === true) { out.widevine_robustness = level; return out; }
+          return next();
+        });
+      }
+      return next();
+    }, function () { return out; });
+  }
+
   function probeStorage() {
     if (!navigator.storage || !navigator.storage.estimate) {
       return Promise.resolve({ storage_quota: null });
@@ -512,7 +585,7 @@
     if (slowProbes) { return slowProbes; }
     slowProbes = Promise.all([
       measureFrames(700), probeMediaDevices(), probeVoices(),
-      probeIce(), probePermissions(), probeStorage()
+      probeIce(), probePermissions(), probeStorage(), probeDrm()
     ]).then(function (parts) {
       var permissions = parts[4];
       return {
@@ -524,6 +597,7 @@
         },
         environment: Object.assign({}, parts[1], parts[2], parts[3],
           { permissions: permissions.permissions }, parts[5], {
+            drm: parts[6],
             codecs: probeCodecs(),
             pdf_viewer_enabled: navigator.pdfViewerEnabled === true,
             battery_api: typeof navigator.getBattery === "function",

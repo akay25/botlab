@@ -387,6 +387,85 @@ def _media_kinds(env):
     return out
 
 
+def _score_drm(env, family):
+    """Check for a licensed content decryption module.
+
+    Widevine is a signed binary that ships with released Chrome and with the
+    Chromium builds a distribution signs. The plain Chromium that Playwright
+    and Puppeteer download carries no CDM, and no amount of patching installs
+    one, which puts this in the same class as the licensed codecs.
+
+    Clear Key is the control. The EME specification mandates it and it needs no
+    licensed component, so a client that grants Clear Key and refuses Widevine
+    is running an engine that does EME with nothing behind it. Reading Widevine
+    alone could not tell that apart from a browser with EME switched off.
+    """
+    out = []
+    drm = env.get("drm")
+    if not isinstance(drm, dict):
+        return out
+
+    systems = drm.get("key_systems") or {}
+    widevine = systems.get("widevine")
+    clearkey = systems.get("clearkey")
+
+    # EME is gated on a secure context, so over plain HTTP the API is absent for
+    # a reason that has nothing to do with the client. Say so rather than
+    # charging for it, exactly as the tls layer does when it could not look.
+    if not drm.get("secure_context", True):
+        return [Signal("environment", "environment.drm_not_measured", 0.0,
+                       "The page was not a secure context, so Encrypted Media Extensions "
+                       "were unavailable and no DRM module could be asked for. Serve the "
+                       "harness over HTTPS to measure this.")]
+    if not drm.get("eme_supported", True):
+        return [Signal("environment", "environment.drm_not_measured", 0.0,
+                       "navigator.requestMediaKeySystemAccess is absent, so this client "
+                       "exposes no Encrypted Media Extensions to probe.")]
+    if widevine is None:
+        return [Signal("environment", "environment.drm_not_measured", 0.0,
+                       "The key system query did not answer before the probe timed out. "
+                       "A refusal and an unanswered question are different things.")]
+
+    if widevine:
+        level = drm.get("widevine_robustness") or ""
+        out.append(Signal("environment", "environment.widevine_present", -1.0,
+                          "The client holds a Widevine content decryption module%s. It is "
+                          "a licensed binary that ships with released browsers and not "
+                          "with the plain Chromium automation downloads."
+                          % (", at %s" % level if level else "")))
+        if level.startswith("HW_"):
+            out.append(Signal("environment", "environment.widevine_hardware_backed", -0.5,
+                              "Widevine granted %s, so decryption is backed by a trusted "
+                              "execution environment on real hardware." % level))
+        return out
+
+    if clearkey and family == "chrome":
+        out.append(Signal("environment", "environment.no_widevine", 2.0,
+                          "The engine grants Clear Key but has no Widevine module. Clear "
+                          "Key is mandated by the specification and needs no licensed "
+                          "component, so this is a Chromium build with the DRM module "
+                          "left out, which is what automation downloads."))
+    elif clearkey:
+        # Safari uses FairPlay and Firefox fetches its module on demand, so an
+        # absence here is not evidence against those families.
+        out.append(Signal("environment", "environment.no_widevine_expected", 0.0,
+                          "No Widevine module, which is unremarkable for %s: Safari uses "
+                          "FairPlay and Firefox downloads its module on first use."
+                          % (family if family != "unknown" else "this client")))
+    else:
+        out.append(Signal("environment", "environment.no_key_systems", 1.2,
+                          "The client granted no key system at all, not even Clear Key, "
+                          "which the specification requires every implementation to "
+                          "support."))
+
+    platform_drm = [name for name in ("playready", "fairplay") if systems.get(name)]
+    if platform_drm:
+        out.append(Signal("environment", "environment.platform_drm_present", -0.6,
+                          "The operating system's own DRM is available: %s."
+                          % ", ".join(platform_drm)))
+    return out
+
+
 def score_environment(session):
     """Check the capabilities that a desktop install has and a container lacks.
 
@@ -471,6 +550,8 @@ def score_environment(session):
     if quota is not None and quota == 0:
         out.append(Signal("environment", "environment.no_storage_quota", 0.7,
                           "The origin was granted no storage quota."))
+
+    out += _score_drm(env, family)
 
     permissions = env.get("permissions") or {}
     states = set(permissions.values())
