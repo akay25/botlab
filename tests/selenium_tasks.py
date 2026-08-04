@@ -160,6 +160,9 @@ def task_targets(driver, mode, pointer):
 def task_slider(driver, mode, pointer):
     """Task 3, optional. Drag the slider into the 55 to 85 band."""
     slider = driver.find_element(By.ID, "slider")
+    # Anchor first: move_to_element scrolls the slider into view, which shifts
+    # every viewport coordinate. Only then is the box safe to measure.
+    pointer.anchor(slider)
     box = driver.execute_script(
         "var r = arguments[0].getBoundingClientRect();"
         "return [r.left, r.top, r.width, r.height];", slider)
@@ -168,7 +171,6 @@ def task_slider(driver, mode, pointer):
     value = random.uniform(64, 76) if mode == "human" else 70
     end_x = left + width * value / 100.0
 
-    pointer.anchor(slider)
     pointer.move_to(left + 2, y)
     ActionChains(driver).click_and_hold().perform()
     if mode == "naive":
@@ -196,6 +198,12 @@ def task_acquisition(driver, mode, pointer):
         element = driver.find_element(By.ID, "fitts-target")
         if not element.is_displayed():
             break
+        # element.click() scrolls on its own in naive mode; the glide path does
+        # not, and offsets aimed outside the viewport are rejected. Scrolling
+        # leaves the pointer's own viewport position intact, so the tracked
+        # coordinates stay valid — only the target had to be re-measured.
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center'});", element)
         centre = pointer.centre_of(element)
         if mode == "naive":
             element.click()
@@ -278,7 +286,6 @@ def main():
     parser.add_argument("--url", default="https://127.0.0.1:8443")
     parser.add_argument("--mode", choices=["naive", "human"], default="naive")
     parser.add_argument("--label", default="")
-    parser.add_argument("--headed", action="store_true", help="Show the browser window.")
     parser.add_argument("--seed", type=int, default=None, help="Make a run repeatable.")
     args = parser.parse_args()
 
@@ -286,7 +293,7 @@ def main():
         random.seed(args.seed)
     label = args.label or ("selenium-" + args.mode)
 
-    result, tasks = run(args.url, label, args.mode, headless=not args.headed)
+    result, tasks = run(args.url, label, args.mode, headless=False)
     traps = report(result, tasks, args.url, args.mode)
 
     if traps:
