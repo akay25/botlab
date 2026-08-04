@@ -22,9 +22,12 @@ async def app_lifespan(app: FastAPI):
         # uvicorn holds the certificate and terminates TLS on the upstream
         # port. The front end sits on the public port and reads the handshake
         # on its way past.
+        # Listen where clients are, forward over loopback. Connecting upstream
+        # to APP_HOST would mean dialling 0.0.0.0 on a wildcard bind, which is
+        # a source address rather than a destination.
         front_end = await tls_proxy.start(
             config.APP_HOST, config.APP_PORT,
-            config.APP_HOST, config.upstream_port)
+            config.upstream_host, config.upstream_port)
     else:
         logger.warning("TLS is off. The tls layer will report no data.")
 

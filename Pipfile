@@ -16,11 +16,13 @@ playwright = "*"
 selenium = "*"
 
 [scripts]
-start = "python -m src"
+start = "python -m src --host 0.0.0.0"
 matrix = "python tools/client_matrix.py"
 calibrate = "python tools/calibrate.py"
 naive = "python examples/playwright_naive.py"
 human = "python examples/playwright_human.py"
+pw-tasks = "python tests/playwright_tasks.py"
+se-tasks = "python tests/selenium_tasks.py"
 
 [requires]
 python_version = "3.14"

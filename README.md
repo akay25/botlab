@@ -319,7 +319,8 @@ front end.
 ### Two ports, and only one of them is yours
 
 Clients talk to `APP_PORT`, which is `8443` by default. uvicorn listens on
-`APP_PORT + 1`, or on `TLS_UPSTREAM_PORT` if you set one.
+`APP_PORT + 1`, or on `TLS_UPSTREAM_PORT` if you set one, and always on
+loopback — so the bypass exists only for something already on this machine.
 
 **uvicorn logs the upstream port on startup. Ignore that line.** It reads like
 an invitation, but a client that accepts it bypasses the front end, and the
@@ -390,7 +391,8 @@ Settings come from `.env`, read by pydantic-settings in
 
 | Variable | Default | Role |
 |---|---|---|
-| `APP_HOST` | `127.0.0.1` | The address to bind. Keep it local |
+| `APP_HOST` | `127.0.0.1` | The address to bind. See below before changing it |
+| `CERT_HOSTS` | empty | Extra names the certificate must cover, comma separated |
 | `APP_PORT` | `8443` | The port clients talk to |
 | `TLS_ENABLED` | `true` | Off serves plain HTTP and leaves the tls layer unmeasured |
 | `TLS_UPSTREAM_PORT` | `0` | uvicorn's port; `0` means `APP_PORT + 1` |
@@ -402,6 +404,55 @@ Settings come from `.env`, read by pydantic-settings in
 `pipenv run` loads `.env` itself, and what it loads wins over what is already
 in your shell. `APP_PORT=9000 pipenv run start` does **not** move the port —
 edit `.env` instead. Without pipenv, the shell wins as usual.
+
+The two flags on the entry point are the exception, because a flag beats both:
+
+```
+pipenv run start --host 0.0.0.0 --port 9443
+```
+
+### Reaching the harness from another machine
+
+The default binds loopback, so only this machine can reach it. To drive the
+task page from a phone or a second computer, bind every address:
+
+```
+pipenv run start --host 0.0.0.0        # or set APP_HOST=0.0.0.0 in .env
+```
+
+Then open `https://<this machine's address>:8443/` on the other device and
+accept the certificate there too. Three things follow automatically.
+
+The certificate is issued for the addresses this machine actually answers on,
+not for `0.0.0.0`, which is a source address and never a destination. It is
+regenerated whenever that set changes, so moving to another network gives you a
+certificate that covers your new address rather than a silent failure. The
+startup banner prints every URL the certificate covers; use one of those.
+
+Detection is not exhaustive. It reads the hostname and the address of the
+default route, which between them miss a machine that answers on a second
+adapter — a laptop sharing a connection, a host on two subnets, a tunnel. When
+clients arrive on an address the banner does not list, name it yourself:
+
+```
+pipenv run start --host 0.0.0.0 --cert-host 192.168.137.225
+```
+
+`--cert-host` repeats, and `CERT_HOSTS` in `.env` does the same job.
+
+uvicorn stays bound to loopback whatever `APP_HOST` says. Only the ClientHello
+front end is published, so the port that bypasses it cannot be reached from
+another machine at all, and no run can quietly lose its tls layer that way.
+
+The redirect keeps whichever hostname the client used, so a device that reaches
+the upstream port by IP is sent back to the public port on that same IP rather
+than to `127.0.0.1`, which would be a different origin and would break the
+report the page posts.
+
+**The harness has no authentication.** Anyone who can reach the port can drive
+the task page, read `/dashboard`, and download every logged run — and the run
+log holds client fingerprints and the keys that were typed. Bind a wildcard on a
+network you trust, and keep the scope rule below: your own test origin only.
 
 ## Layout
 

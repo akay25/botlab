@@ -3,6 +3,7 @@
 import datetime
 import ipaddress
 import os
+import socket
 
 from .config import config
 from .logging import get_logger
@@ -12,8 +13,62 @@ logger = get_logger("loaders.certificates")
 LOOPBACK = (ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("::1"))
 
 
-def _san_entries(host: str):
-    """Return every name and address the certificate has to cover.
+def _routed_address():
+    """Return the address this machine would use to reach the local network.
+
+    Connecting a UDP socket only fixes a route; no packet is ever sent. The
+    target is TEST-NET-1 from RFC 5737, reserved for documentation and never
+    routable, so nothing leaves the machine either way.
+
+    This is the reliable half of the detection. A hostname often resolves to
+    loopback alone, or on a machine with several adapters to whichever one the
+    resolver happens to prefer, which need not be the one clients arrive on.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))
+        return probe.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        probe.close()
+
+
+def _local_addresses():
+    """Return the names and addresses this machine answers on.
+
+    Only needed for a wildcard bind. APP_HOST is then 0.0.0.0, which is not an
+    address any client connects to: they reach the harness on a real address
+    such as 192.168.1.50, and a certificate naming 0.0.0.0 covers none of them.
+
+    Neither method here is exhaustive. A machine with more than one adapter —
+    a laptop sharing a connection, a host on two subnets — may answer on an
+    address that shows up in neither, and clients arriving on that address will
+    be handed a certificate that does not cover them. Name it in CERT_HOSTS, or
+    pass --cert-host, when that happens.
+    """
+    names, addresses = set(), set()
+    try:
+        hostname = socket.gethostname()
+    except OSError:
+        hostname = ""
+    if hostname:
+        names.add(hostname)
+        try:
+            for info in socket.getaddrinfo(hostname, None):
+                addresses.add(info[4][0])
+        except (socket.gaierror, OSError):
+            logger.debug("Could not resolve %s to list this machine's addresses",
+                         hostname)
+
+    routed = _routed_address()
+    if routed:
+        addresses.add(routed)
+    return names, addresses
+
+
+def _wanted(host: str):
+    """Return the (dns names, ip addresses) the certificate has to cover.
 
     A browser matches an IP literal in a URL against an iPAddress entry only:
     DNS:localhost does not cover https://127.0.0.1:8443, which is the URL the
@@ -21,27 +76,53 @@ def _san_entries(host: str):
     rejects the certificate, and because a fetch gets no interstitial to click
     through, the page's own report fails with what looks like a CORS error.
     """
+    names = {"localhost", "botlab.local"}
+    addresses = set(LOOPBACK)
+
+    candidates = [host] + [part.strip() for part in config.CERT_HOSTS.split(",")]
+    if config.binds_wildcard:
+        extra_names, extra_addresses = _local_addresses()
+        names |= extra_names
+        candidates += list(extra_addresses)
+
+    for candidate in candidates:
+        if not candidate or candidate in ("0.0.0.0", "::"):
+            continue                       # a bind wildcard, never a destination
+        try:
+            addresses.add(ipaddress.ip_address(candidate))
+        except ValueError:
+            names.add(candidate)
+    return names, addresses
+
+
+def certificate_hosts():
+    """Return the (names, addresses) the certificate covers, as strings.
+
+    The entry point prints these, so a reader can see which URLs will work
+    before a client is pointed at one.
+    """
+    names, addresses = _wanted(config.APP_HOST)
+    return names, {str(address) for address in addresses}
+
+
+def _san_entries(host: str):
+    """Return the SubjectAlternativeName entries for this configuration."""
     from cryptography import x509
 
-    entries = [x509.DNSName("localhost"), x509.DNSName("botlab.local")]
-    entries += [x509.IPAddress(address) for address in LOOPBACK]
-
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        if host and host not in ("localhost", "botlab.local"):
-            entries.append(x509.DNSName(host))
-    else:
-        if address not in LOOPBACK:
-            entries.append(x509.IPAddress(address))
-    return entries
+    names, addresses = _wanted(host)
+    return ([x509.DNSName(name) for name in sorted(names)]
+            + [x509.IPAddress(address) for address in
+               sorted(addresses, key=lambda a: (a.version, str(a)))])
 
 
 def _covers(cert_file: str, host: str) -> bool:
-    """Return whether the stored certificate is valid for the host we serve.
+    """Return whether the stored certificate covers everything it needs to.
 
     A certificate generated for a different APP_HOST is worse than none: it
-    loads, then fails in the browser for a reason that reads as CORS.
+    loads, then fails in the browser for a reason that reads as CORS. Comparing
+    the whole required set rather than one host also means a laptop that moved
+    to another network regenerates automatically, because the address clients
+    now reach it on is no longer in the certificate.
     """
     from cryptography import x509
 
@@ -53,11 +134,13 @@ def _covers(cert_file: str, host: str) -> bool:
     except (OSError, ValueError, x509.ExtensionNotFound):
         return False
 
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return host in san.get_values_for_type(x509.DNSName)
-    return address in san.get_values_for_type(x509.IPAddress)
+    names, addresses = _wanted(host)
+    stored_names = set(san.get_values_for_type(x509.DNSName))
+    stored_addresses = {str(a) for a in san.get_values_for_type(x509.IPAddress)}
+    missing = (names - stored_names) | ({str(a) for a in addresses} - stored_addresses)
+    if missing:
+        logger.debug("The stored certificate is missing %s", ", ".join(sorted(missing)))
+    return not missing
 
 
 def ensure_certificate() -> None:
