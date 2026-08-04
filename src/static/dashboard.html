@@ -28,6 +28,8 @@
   td { border-bottom:1px solid var(--rule); padding:9px 8px; vertical-align:top; }
   tr:hover td { background:var(--panel); }
   .score { font-family:var(--mono); font-size:19px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .score a { color:inherit; text-decoration:none; border-bottom:1px dashed var(--rule); }
+  .score a:hover { border-bottom-color:currentColor; }
   .chip { font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
           border:1px solid var(--rule); padding:2px 7px; display:inline-block; }
   .chip.hit { border-color:var(--bot); color:var(--bot); }
@@ -41,7 +43,7 @@
 <div class="wrap">
 <header>
   <h1>botlab &middot; sessions</h1>
-  <p class="sub">Each row is one scored session. The earliest column names the first layer in the stack that flagged the client. Give each client its own run label to build a comparison matrix.</p>
+  <p class="sub">Each row is one scored session; click its score to open the full report. The earliest column names the first layer in the stack that flagged the client. Give each client its own run label to build a comparison matrix.</p>
   <div class="block">
     <span>rows <b id="count">0</b></span>
     <span>refresh <b>3 s</b></span>
@@ -73,8 +75,13 @@ function render(rows) {
     Object.keys(r.layers || {}).forEach(function (k) {
       ids = ids.concat((r.layers[k] || {}).ids || []);
     });
+    var score = r.score || "-";
+    if (s.id) {
+      score = '<a href="/report/' + encodeURIComponent(s.id) +
+              '" title="open the full report">' + score + '</a>';
+    }
     html += '<tr>' +
-      '<td class="score" style="color:' + colorFor(r.score) + '">' + (r.score || "-") + '</td>' +
+      '<td class="score" style="color:' + colorFor(r.score) + '">' + score + '</td>' +
       '<td>' + (r.verdict || "-") + '</td>' +
       '<td>' + (r.first_catching_layer
         ? '<span class="chip hit">' + r.first_catching_layer + '</span>'
