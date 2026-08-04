@@ -25,11 +25,38 @@
     inputs: [],
     wheel: [],
     targets: [],
+    fitts: [],
+    honeypots: [],
     keypress_count: 0,
     duration_ms: 0
   };
 
   function now() { return Math.round((performance.now() - START) * 100) / 100; }
+
+  /* An element carrying data-honeypot is hidden from sight, removed from the tab
+     order and hidden from assistive technology. Nothing that can see the page
+     can reach one, so anything that touches one found it by reading the DOM.
+     Walk up from the event target, because a click can land on a child. */
+  function honeypotFor(node) {
+    var depth = 0;
+    while (node && node.getAttribute && depth < 6) {
+      var kind = node.getAttribute("data-honeypot");
+      if (kind) { return { kind: kind, id: node.id || "" }; }
+      node = node.parentNode;
+      depth += 1;
+    }
+    return null;
+  }
+
+  function recordHoneypot(type, event) {
+    if (telemetry.honeypots.length >= 40) { return; }
+    var trap = honeypotFor(event.target);
+    if (!trap) { return; }
+    telemetry.honeypots.push({
+      t: now(), type: type, kind: trap.kind, id: trap.id,
+      tr: event.isTrusted === true
+    });
+  }
 
   /* ------------------------------------------------------------ capture */
 
@@ -57,12 +84,17 @@
   }
 
   document.addEventListener("click", function (e) {
+    recordHoneypot("click", e);
     if (telemetry.clicks.length >= 200) { return; }
     var target = e.target && e.target.id ? e.target.id : "";
     telemetry.clicks.push({
       t: now(), x: e.clientX, y: e.clientY, detail: e.detail,
       target: target, tr: e.isTrusted === true
     });
+  }, true);
+
+  document.addEventListener("focusin", function (e) {
+    recordHoneypot("focus", e);
   }, true);
 
   function recordKey(type) {
@@ -80,6 +112,7 @@
   document.addEventListener("keypress", function () { telemetry.keypress_count += 1; }, true);
 
   document.addEventListener("input", function (e) {
+    recordHoneypot("input", e);
     if (telemetry.inputs.length >= MAX_INPUT) { return; }
     telemetry.inputs.push({
       t: now(),
@@ -683,16 +716,42 @@
     });
   }
 
+  /* The pointer position when a target appeared is where the hand started from,
+     which is the D in Fitts's law. Keep the last one seen so an acquisition can
+     be stamped with it. */
+  var lastPointer = { x: null, y: null };
+  function trackPointer(e) { lastPointer = { x: e.clientX, y: e.clientY }; }
+  document.addEventListener(window.PointerEvent ? "pointermove" : "mousemove",
+    trackPointer, { capture: true, passive: true });
+
+  var shownFrom = { x: null, y: null };
+
   window.botlab = {
     sessionId: window.__BOTLAB_SESSION__ || "",
     result: null,
     send: send,
     telemetry: telemetry,
+    now: now,
     markTarget: function (id, rect) {
       telemetry.targets.push({
         id: id, t: now(),
         cx: Math.round(rect.left + rect.width / 2),
         cy: Math.round(rect.top + rect.height / 2)
+      });
+    },
+    /* Called as each acquisition target appears: freeze where the pointer was
+       at that instant, before it starts travelling. */
+    markTargetShown: function () {
+      shownFrom = { x: lastPointer.x, y: lastPointer.y };
+    },
+    markAcquisition: function (record) {
+      if (telemetry.fitts.length >= 60) { return; }
+      telemetry.fitts.push({
+        i: record.i, cx: record.cx, cy: record.cy, w: record.w,
+        shown: record.shown, t: now(),
+        hx: record.hx, hy: record.hy,
+        fx: shownFrom.x, fy: shownFrom.y,
+        miss: record.miss || 0
       });
     }
   };

@@ -40,6 +40,22 @@ MIN_HUMAN_FLIGHT_CV = 0.15
 MIN_HUMAN_DWELL_CV = 0.12
 # Below this many presses the spread of a series means nothing.
 MIN_TIMING_SAMPLES = 5
+
+# Fitts's law. The time to acquire a target grows with the index of difficulty,
+# ID = log2(2D/W), where D is the distance the hand travels and W the width of
+# the target. For a hand the relationship is a straight line, MT = a + b·ID,
+# and it holds tightly. A tool that jumps the pointer to a coordinate takes the
+# same time whatever it is aiming at, so its slope is flat and its throughput is
+# not physical.
+MIN_FITTS_SAMPLES = 5
+# Throughput, ID over MT, in bits per second. ISO 9241-9 studies put a mouse at
+# roughly 3.7 to 10 bits per second. Above this is not a hand on a mouse.
+MAX_HUMAN_THROUGHPUT = 14.0
+# Milliseconds of movement time per bit of difficulty. A hand is around 100 to
+# 200. A tool that ignores the target reads near zero.
+MIN_FITTS_SLOPE_MS = 40.0
+# How well the straight line has to fit before the fit is worth crediting.
+MIN_FITTS_FIT = 0.5
 # The window before a click in which a hand is still approaching the target.
 APPROACH_MS = 250.0
 # Below this sampling density a path has no readable shape, only endpoints.
@@ -346,6 +362,101 @@ def _analyse_keys(events, duration_ms):
     return out
 
 
+def _analyse_fitts(records):
+    """Fit MT = a + b·ID over the acquisition task.
+
+    The page records only what it can see: where each target was, how wide, when
+    it appeared, when it was hit, and where the pointer was at the moment it
+    appeared. Distance, difficulty, movement time and the fit are all worked out
+    here, so a stored run can be re-measured when the constants change.
+    """
+    out: dict = {"count": len(records or [])}
+    samples = []
+    for index, record in enumerate(records or []):
+        try:
+            width = float(record.get("w") or 0)
+            cx = float(record.get("cx"))
+            cy = float(record.get("cy"))
+            movement = float(record.get("t", 0)) - float(record.get("shown", 0))
+        except (TypeError, ValueError):
+            continue
+        if width <= 0 or movement <= 0:
+            continue
+
+        start_x, start_y = record.get("fx"), record.get("fy")
+        if start_x is None or start_y is None:
+            # No pointer event before this target appeared. Fall back to where
+            # the previous one was hit, which is where the hand must have been.
+            if index == 0:
+                continue
+            previous = (records or [])[index - 1]
+            start_x, start_y = previous.get("hx"), previous.get("hy")
+            if start_x is None or start_y is None:
+                continue
+        try:
+            distance = math.dist((float(start_x), float(start_y)), (cx, cy))
+        except (TypeError, ValueError):
+            continue
+        if distance <= 0:
+            continue
+
+        difficulty = math.log2(2.0 * distance / width)
+        if difficulty <= 0:
+            continue
+        samples.append({
+            "i": index,
+            "distance_px": round(distance, 1),
+            "width_px": round(width, 1),
+            "id_bits": round(difficulty, 3),
+            "mt_ms": round(movement, 1),
+            "misses": int(record.get("miss") or 0),
+        })
+
+    out["measured"] = len(samples)
+    out["samples"] = samples
+    if not samples:
+        return out
+
+    ids = [s["id_bits"] for s in samples]
+    times = [s["mt_ms"] for s in samples]
+    out["misses"] = sum(s["misses"] for s in samples)
+    out["id_bits_mean"] = round(_mean(ids), 3)
+    out["mt_ms_mean"] = round(_mean(times), 1)
+    out["mt_ms_stdev"] = round(_stdev(times), 1)
+
+    total_seconds = sum(times) / 1000.0
+    out["throughput_bits_per_s"] = (round(sum(ids) / total_seconds, 2)
+                                    if total_seconds > 0 else None)
+
+    # A slope needs at least two distinct difficulties to exist at all.
+    mean_id, mean_mt = _mean(ids), _mean(times)
+    sxx = sum((value - mean_id) ** 2 for value in ids)
+    if len(samples) < 2 or sxx == 0:
+        return out
+
+    slope = sum((a - mean_id) * (b - mean_mt) for a, b in zip(ids, times)) / sxx
+    intercept = mean_mt - slope * mean_id
+    ss_total = sum((b - mean_mt) ** 2 for b in times)
+    ss_residual = sum((b - (intercept + slope * a)) ** 2 for a, b in zip(ids, times))
+    out["slope_ms_per_bit"] = round(slope, 1)
+    out["intercept_ms"] = round(intercept, 1)
+    out["r_squared"] = round(1 - ss_residual / ss_total, 4) if ss_total > 0 else None
+    return out
+
+
+def _analyse_honeypots(records):
+    """Count what touched a control that nothing able to see the page can reach."""
+    out: dict = {"count": len(records or []), "types": {}, "ids": []}
+    for record in records or []:
+        kind = str(record.get("type") or "")
+        out["types"][kind] = out["types"].get(kind, 0) + 1
+        name = str(record.get("id") or record.get("kind") or "")
+        if name and name not in out["ids"]:
+            out["ids"].append(name)
+    out["untrusted"] = sum(1 for r in records or [] if r.get("tr") is False)
+    return out
+
+
 def analyse(beh):
     """Return every derived metric for one session's telemetry.
 
@@ -376,6 +487,8 @@ def analyse(beh):
             "untrusted": sum(1 for i in inputs if i.get("tr") is False),
         },
         "wheel": {"count": len(beh.get("wheel") or [])},
+        "fitts": _analyse_fitts(beh.get("fitts")),
+        "honeypots": _analyse_honeypots(beh.get("honeypots")),
     }
 
     first_click = min((float(c.get("t", 0)) for c in clicks), default=None)
@@ -641,4 +754,83 @@ def findings(beh, metrics):
             out.append(_finding("behavior.corrections_typed", -0.6,
                                 "The client corrected itself %d times while typing."
                                 % keys["backspaces"]))
+
+    out += _honeypot_findings(metrics.get("honeypots") or {})
+    out += _fitts_findings(metrics.get("fitts") or {})
+    return out
+
+
+def _honeypot_findings(honeypots):
+    """Judge contact with a control that nothing able to see the page can reach.
+
+    These carry the heaviest weights in the layer, and they earn them: the
+    controls are invisible, outside the tab order and hidden from assistive
+    technology, so neither a person nor a screen reader can arrive at one. The
+    only way to touch one is to read the DOM and act on what is written there.
+    """
+    if not honeypots.get("count"):
+        return []
+
+    types = honeypots.get("types") or {}
+    named = ", ".join(honeypots.get("ids") or []) or "an unnamed control"
+    out = []
+    if types.get("input"):
+        out.append(_finding("behavior.honeypot_filled", 3.4,
+                            "Text was entered into a hidden field (%s). It is invisible, "
+                            "outside the tab order and hidden from assistive technology, so "
+                            "only something reading the DOM could have found it." % named))
+    if types.get("click"):
+        out.append(_finding("behavior.honeypot_click", 3.2,
+                            "A hidden control was clicked (%s). Nothing that can see the "
+                            "page can reach it." % named))
+    if types.get("focus") and not types.get("input") and not types.get("click"):
+        out.append(_finding("behavior.honeypot_focus", 2.0,
+                            "A hidden control took focus (%s) without being typed into or "
+                            "clicked. It carries tabindex -1, so tabbing does not reach it."
+                            % named))
+    return out
+
+
+def _fitts_findings(fitts):
+    """Judge the acquisition task against Fitts's law.
+
+    A hand trades speed for accuracy along a line: reaching a small distant
+    target takes measurably longer than a large near one, and movement time
+    against log2(2D/W) is straight with a slope of roughly 100 to 200 ms per
+    bit. A tool that jumps the pointer to a coordinate spends the same time
+    whatever it is aiming at, so the line is flat, and it acquires difficulty
+    faster than a hand physically can.
+    """
+    measured = fitts.get("measured", 0)
+    if measured < MIN_FITTS_SAMPLES:
+        return []
+
+    out = []
+    throughput = fitts.get("throughput_bits_per_s")
+    if throughput is not None and throughput > MAX_HUMAN_THROUGHPUT:
+        out.append(_finding("behavior.superhuman_throughput", 2.8,
+                            "The client acquired %.1f bits of difficulty per second across "
+                            "%d targets. A mouse in a hand manages roughly 4 to 10, and the "
+                            "limit is motor control rather than intent."
+                            % (throughput, measured)))
+
+    slope = fitts.get("slope_ms_per_bit")
+    fit = fitts.get("r_squared")
+    if slope is None:
+        return out
+
+    if slope < MIN_FITTS_SLOPE_MS:
+        out.append(_finding("behavior.fitts_no_scaling", 2.4,
+                            "Movement time barely grew with difficulty: %.0f ms per bit "
+                            "across targets from %.1f to %.1f bits. A hand needs roughly "
+                            "100 to 200 ms more for every extra bit; a tool that jumps to a "
+                            "coordinate needs none, because the size of the target never "
+                            "cost it anything."
+                            % (slope, min(s["id_bits"] for s in fitts["samples"]),
+                               max(s["id_bits"] for s in fitts["samples"]))))
+    elif fit is not None and fit >= MIN_FITTS_FIT:
+        out.append(_finding("behavior.fitts_obeys", -1.2,
+                            "Acquisition time tracks the index of difficulty as a hand does: "
+                            "%.0f ms per bit with a fit of %.2f over %d targets."
+                            % (slope, fit, measured)))
     return out

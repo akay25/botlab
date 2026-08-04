@@ -154,6 +154,14 @@
     t.appendChild(body);
     return t;
   }
+  /* Drop keys that are drawn elsewhere, so the table stays a table of numbers. */
+  function without(source, names) {
+    var copy = {};
+    Object.keys(source || {}).forEach(function (key) {
+      if (names.indexOf(key) === -1) { copy[key] = source[key]; }
+    });
+    return copy;
+  }
   function flatten(source, prefix) {
     var out = [];
     Object.keys(source || {}).forEach(function (key) {
@@ -162,7 +170,18 @@
       if (value && typeof value === "object" && !Array.isArray(value)) {
         out = out.concat(flatten(value, name));
       } else if (Array.isArray(value)) {
-        out.push([name, value.length ? value.join(", ") : "—"]);
+        if (!value.length) {
+          out.push([name, "—"]);
+        } else if (value.some(function (item) {
+          return item !== null && typeof item === "object";
+        })) {
+          /* A list of records rather than of values. Joining it would print
+             [object Object] once per entry, so say how many there are and leave
+             the detail to the chart that draws it and to the JSON download. */
+          out.push([name, value.length + " entries"]);
+        } else {
+          out.push([name, value.join(", ")]);
+        }
       } else {
         out.push([name, value]);
       }
@@ -478,6 +497,134 @@
     return host;
   }
 
+  /* ------------------------------------------------ Fitts's law and traps */
+
+  function fitts(data) {
+    var samples = (data || {}).samples || [];
+    if (samples.length < 2) { return null; }
+
+    var host = el("div");
+    var slope = data.slope_ms_per_bit;
+    var fit = data.r_squared;
+    var throughput = data.throughput_bits_per_s;
+
+    var tiles = el("div", "tiles");
+    tiles.appendChild(tile("targets", String(data.measured || samples.length)));
+    if (slope !== null && slope !== undefined) {
+      tiles.appendChild(tile("ms per bit", Math.round(slope),
+        slope < 40 ? "bad" : "good"));
+    }
+    if (fit !== null && fit !== undefined) {
+      tiles.appendChild(tile("fit r²", fit.toFixed(2)));
+    }
+    if (throughput !== null && throughput !== undefined) {
+      tiles.appendChild(tile("bits / second", throughput.toFixed(1),
+        throughput > 14 ? "bad" : "good"));
+    }
+    tiles.appendChild(tile("misses", String(data.misses || 0)));
+    host.appendChild(tiles);
+
+    var W = 1000, H = 340;
+    var pad = { l: 56, r: 14, t: 14, b: 34 };
+    var idLow = Infinity, idHigh = -Infinity, mtTop = 0;
+    samples.forEach(function (s) {
+      idLow = Math.min(idLow, s.id_bits);
+      idHigh = Math.max(idHigh, s.id_bits);
+      mtTop = Math.max(mtTop, s.mt_ms);
+    });
+    if (idHigh - idLow < 0.5) { idHigh = idLow + 0.5; }
+    mtTop = Math.max(60, Math.ceil(mtTop / 100) * 100);
+
+    function px(bits) {
+      return pad.l + ((bits - idLow) / (idHigh - idLow)) * (W - pad.l - pad.r);
+    }
+    function py(ms) {
+      return H - pad.b - (Math.min(ms, mtTop) / mtTop) * (H - pad.t - pad.b);
+    }
+
+    var chart = svg("svg", {
+      "class": "trace", viewBox: "0 0 " + W + " " + H,
+      preserveAspectRatio: "xMidYMid meet", role: "img",
+      "aria-label": "Movement time against index of difficulty for each target"
+    });
+
+    [0, 0.25, 0.5, 0.75, 1].forEach(function (fraction) {
+      var y = H - pad.b - fraction * (H - pad.t - pad.b);
+      chart.appendChild(svg("line", {
+        x1: pad.l, y1: y, x2: W - pad.r, y2: y,
+        stroke: "var(--rule)", "stroke-width": "1"
+      }));
+      var label = svg("text", {
+        x: pad.l - 8, y: y + 4, "text-anchor": "end", fill: "var(--mute)",
+        "font-size": "11", "font-family": "ui-monospace, monospace"
+      });
+      label.textContent = Math.round(fraction * mtTop) + "";
+      chart.appendChild(label);
+    });
+
+    // The fitted line. Its steepness is the whole measurement: flat means the
+    // target's size and distance never cost the client anything.
+    if (slope !== null && slope !== undefined &&
+        data.intercept_ms !== null && data.intercept_ms !== undefined) {
+      chart.appendChild(svg("line", {
+        x1: px(idLow), y1: py(data.intercept_ms + slope * idLow),
+        x2: px(idHigh), y2: py(data.intercept_ms + slope * idHigh),
+        stroke: slope < 40 ? "var(--bot)" : "var(--human)",
+        "stroke-width": "2", "stroke-dasharray": "7 5"
+      }));
+    }
+
+    samples.forEach(function (s) {
+      chart.appendChild(svg("circle", {
+        cx: px(s.id_bits), cy: py(s.mt_ms), r: "5",
+        fill: "var(--ink)", opacity: "0.78"
+      }));
+      var mark = svg("text", {
+        x: px(s.id_bits) + 9, y: py(s.mt_ms) - 7, fill: "var(--mute)",
+        "font-size": "10", "font-family": "ui-monospace, monospace"
+      });
+      mark.textContent = Math.round(s.width_px) + "px";
+      chart.appendChild(mark);
+    });
+
+    var axis = svg("text", {
+      x: pad.l, y: H - 10, fill: "var(--mute)", "font-size": "11",
+      "font-family": "ui-monospace, monospace"
+    });
+    axis.textContent = "index of difficulty  log2(2D/W)  " + idLow.toFixed(1)
+      + " → " + idHigh.toFixed(1) + " bits    (movement time in ms up the side)";
+    chart.appendChild(axis);
+
+    var wrap = el("div", "trace-wrap");
+    wrap.appendChild(chart);
+    host.appendChild(wrap);
+
+    var legend = el("div", "legend");
+    [["one target, labelled with its width", "var(--ink)", "dot"],
+     ["the fitted line", slope < 40 ? "var(--bot)" : "var(--human)", "line"]]
+      .forEach(function (item) {
+        var entry = el("span");
+        var swatch = el("i", item[2] === "dot" ? "dot" : null);
+        if (item[2] === "dot") { swatch.style.background = item[1]; }
+        else { swatch.style.borderTopColor = item[1]; }
+        entry.appendChild(swatch);
+        entry.appendChild(el("span", null, item[0]));
+        legend.appendChild(entry);
+      });
+    host.appendChild(legend);
+    return host;
+  }
+
+  function honeypots(data) {
+    if (!data || !data.count) { return null; }
+    var rows = Object.keys(data.types || {}).map(function (kind) {
+      return [kind, data.types[kind] + " time(s)"];
+    });
+    rows.push(["controls touched", (data.ids || []).join(", ") || "—"]);
+    rows.push(["dispatched by script", String(data.untrusted || 0)]);
+    return table(rows);
+  }
+
   function ladder(layers, caught) {
     var host = el("div", "ladder");
     var peak = 4;
@@ -582,6 +729,27 @@
 
     var metrics = result.behavior_metrics;
     if (metrics) {
+      var trapped = honeypots(metrics.honeypots);
+      if (trapped) {
+        host.appendChild(section("Honeypots touched", trapped,
+          "These controls are invisible, carry tabindex -1 and are hidden from "
+          + "assistive technology, so neither a person nor a screen reader can arrive "
+          + "at one. Anything that touched one found it by reading the DOM."));
+      }
+
+      var law = fitts(metrics.fitts);
+      if (law) {
+        host.appendChild(section("Fitts's law: speed against accuracy", law,
+          "Each dot is one target: how difficult it was to acquire, against how long "
+          + "the client took. Difficulty is log2(2D/W), where D is the distance the "
+          + "pointer had to cover and W the width of the target, so a small distant "
+          + "circle sits to the right and a large near one to the left. A hand trades "
+          + "speed for accuracy along a straight line at roughly 100 to 200 ms per "
+          + "extra bit. A tool that jumps to a coordinate draws a flat line, because "
+          + "the size of the target never cost it anything, and it collects difficulty "
+          + "faster than a hand physically can."));
+      }
+
       var typing = keystrokes(metrics.keys);
       if (typing) {
         host.appendChild(section("How the keyboard was typed on", typing,
@@ -601,7 +769,8 @@
       left.appendChild(table(flatten(metrics.pointer)));
       var right = el("div");
       right.appendChild(el("h3", null, "keys"));
-      right.appendChild(table(flatten(metrics.keys)));
+      // series is the per-keystroke chart above; samples is the Fitts scatter.
+      right.appendChild(table(flatten(without(metrics.keys, ["series"]))));
       right.appendChild(el("h3", null, "clicks and input"));
       right.appendChild(table(flatten(metrics.clicks).concat(flatten(metrics.inputs))));
       grid.appendChild(left); grid.appendChild(right);

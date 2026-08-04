@@ -11,9 +11,10 @@ evasion tool.
 ## How it works
 
 Point Selenium, Playwright, or any other tool at `https://127.0.0.1:8443/`.
-The page asks it to type into two fields, click three targets, and drag a
-slider. Every pointer and key event is recorded raw and posted back. The
-harness scores eight layers and returns a verdict the script can read.
+The page asks it to type into two fields, click three targets, drag a slider,
+and acquire ten targets that vary in size and distance. Every pointer and key
+event is recorded raw and posted back. The harness scores eight layers and
+returns a verdict the script can read.
 
 ```
   automation tool ──→ task page ──→ eight layers ──→ report, dashboard, CSV
@@ -76,12 +77,21 @@ Selectors are stable, so every tool performs the identical task and the reports
 compare like for like: `#field-name`, `#field-email`, `#target-1` through
 `#target-3`, `#slider`, `#submit-run`.
 
+Task 4 uses one button, `#fitts-target`, which moves and resizes after each hit.
+Read its bounding box each time rather than caching it.
+
 ```js
 window.botlab.sessionId   // the run id, also the report URL
-window.botlab.tasks()     // {typing, targets, drag, ready, submitted}
+window.botlab.tasks()     // {typing, targets, drag, acquisitions, ready, submitted}
 window.botlab.finish()    // returns a promise of the scored result
 window.botlab.result      // the same result once it has arrived
 ```
+
+Three controls on the page are honeypots. Do not click `#fitts-decoy`,
+`#hp-email` or `#hp-submit`: they are invisible and unreachable by hand, and
+touching one is scored as near-conclusive evidence of automation. Selecting
+elements by what is visible rather than by `querySelectorAll` avoids them, which
+is the point of them being there.
 
 A script can read its own verdict and fail a build on it:
 
@@ -155,6 +165,43 @@ too even for a hand.
 Movements are judged one at a time. A path that visits three targets in three
 corners is bent by the task, not by a hand, so a whole-session straightness
 ratio says nothing.
+
+### Fitts's law, and the honeypots
+
+Task 4 asks for ten targets to be acquired, one at a time, deliberately spread
+across size and distance. The page records only what it can see — where each
+target was, how wide, when it appeared, when it was hit, and where the pointer
+was standing at the moment it appeared. Distance, difficulty, movement time and
+the fit are all worked out on the server.
+
+Fitts's law says the time to acquire a target is `MT = a + b·log₂(2D/W)`, where
+`D` is the distance the hand covers and `W` the width of the target. For a hand
+the relationship is a straight line and it holds tightly: reaching a 16 px
+circle across the arena takes measurably longer than reaching a 116 px one
+nearby. Three things follow, and the report draws all of them.
+
+A flat line is `behavior.fitts_no_scaling` at +2.0 or more: the client spent the
+same time however hard the target was, because a tool that jumps the pointer to
+a coordinate never paid for the target's size. A slope in the human range with a
+good fit earns `behavior.fitts_obeys`. And throughput — difficulty acquired per
+second — catches what the slope alone can miss: a mouse in a hand manages
+roughly 4 to 10 bits per second, so `behavior.superhuman_throughput` fires above
+`MAX_HUMAN_THROUGHPUT` on physical grounds rather than statistical ones.
+
+This is the check that survives a humanised script. A tool that interpolates a
+curved path scales its movement time with **distance**, which defeats a naive
+"did the pointer move?" test — but it is blind to **width**, so it still flattens
+against difficulty and still collects bits faster than an arm can.
+
+**Honeypots.** Three controls on the page are invisible, carry `tabindex="-1"`
+and are hidden from assistive technology: a decoy circle sharing the live
+target's class, a hidden email field, and a hidden submit button. Neither a
+person nor a screen reader can arrive at one, so anything that touches one found
+it by reading the DOM. `behavior.honeypot_filled` (+3.4),
+`behavior.honeypot_click` (+3.2) and `behavior.honeypot_focus` (+2.0) are the
+heaviest weights in the layer, and they earn them. The accessibility attributes
+are not politeness — without them a real screen-reader user would trip a trap
+and land in the results as a false positive.
 
 ### What the hardware checks read
 

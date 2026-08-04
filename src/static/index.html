@@ -51,6 +51,24 @@
   #target-2 { right:34px; top:120px; }
   #target-3 { left:44%;   bottom:24px; }
 
+  #fitts-arena { position:relative; height:340px; max-width:880px; background:var(--panel);
+                 border:1px dashed var(--rule); margin-top:6px; cursor:crosshair;
+                 overflow:hidden; }
+  .fitts-target { position:absolute; border-radius:50%; border:2px solid var(--bot);
+                  background:#fff; cursor:pointer; padding:0; display:none; }
+  .fitts-target.live { display:block; }
+  /* The decoy is never displayed and never laid out where a pointer could reach
+     it. It exists only to be found by something reading the DOM. */
+  .fitts-target.decoy { display:block; visibility:hidden; left:-4000px; top:0;
+                        width:40px; height:40px; }
+  .fitts-done { display:none; position:absolute; left:0; right:0; top:46%;
+                text-align:center; font-family:var(--mono); font-size:12px;
+                letter-spacing:.16em; text-transform:uppercase; color:var(--done); }
+  .fitts-done.shown { display:block; }
+  .trap { position:absolute; left:-9999px; top:-9999px; width:1px; height:1px;
+          overflow:hidden; opacity:0; }
+  .trap #hp-submit { display:none; }
+
   input[type=range] { width:100%; max-width:460px; margin-top:8px; }
   .readout-small { font-family:var(--mono); font-size:12px; color:var(--mute); }
 
@@ -98,9 +116,7 @@
 
 <header>
   <h1>botlab &middot; interaction test</h1>
-  <p class="sub">Complete the three tasks below. This page records how they were done —
-  the shape of every pointer movement and the timing of every keystroke — and reports whether
-  a hand or a script did them.</p>
+  <p class="sub">Complete the tasks below.</p>
   <div class="block">
     <span>run <b id="run-id">—</b></span>
     <span>label <b id="run-label">none</b></span>
@@ -140,6 +156,36 @@
   <input type="range" id="slider" min="0" max="100" value="0" step="1">
   <div class="readout-small">value <b id="slider-value">0</b></div>
 </section>
+
+<section id="task-fitts">
+  <h2>Task 4 &mdash; acquisition, optional <span class="state" id="state-fitts">0 of 10</span></h2>
+  <p class="task-note">Click each circle as it appears, <b>as quickly and as accurately as you
+  can</b>. Ten will appear one at a time, and they deliberately differ in size and in how far
+  they sit from the last one. A hand takes measurably longer to reach a small distant circle
+  than a large near one, and the relationship between the two is a straight line with a known
+  slope. A tool that jumps the pointer to a coordinate takes the same time whatever it is
+  aiming at. This one is optional; the report is produced without it.</p>
+  <div id="fitts-arena">
+    <button class="fitts-target" id="fitts-target" type="button" aria-live="polite"></button>
+    <!-- Same class as the live target, never shown, never focusable, hidden from
+         assistive technology. A script that collects .fitts-target and clicks
+         them all hits this one; a person cannot. -->
+    <button class="fitts-target decoy" id="fitts-decoy" type="button"
+            data-honeypot="target" tabindex="-1" aria-hidden="true"></button>
+    <p class="fitts-done" id="fitts-done">All ten acquired. Thank you.</p>
+  </div>
+  <div class="readout-small">last <b id="fitts-last">&mdash;</b></div>
+</section>
+
+<!-- Honeypots. Every one is hidden from sight, removed from the tab order and
+     hidden from assistive technology, so no person and no screen reader can
+     reach them. Anything that touches one found it by reading the DOM. -->
+<div class="trap" aria-hidden="true">
+  <label for="hp-email">Leave this field empty</label>
+  <input type="email" id="hp-email" name="email_confirm" data-honeypot="field"
+         tabindex="-1" autocomplete="off">
+  <button type="button" id="hp-submit" data-honeypot="button" tabindex="-1">Submit</button>
+</div>
 
 <section>
   <h2>Finish</h2>
@@ -193,6 +239,8 @@
     click.className = "state" + (state.clicks >= 3 ? " done" : "");
     document.getElementById("state-drag").textContent = state.drag ? "done" : "waiting";
     document.getElementById("state-drag").className = "state" + (state.drag ? " done" : "");
+    var fitts = document.getElementById("state-fitts");
+    fitts.className = "state" + (fittsStep >= FITTS_STEPS.length ? " done" : "");
     document.getElementById("submit-run").disabled = !required() || state.submitted;
     scheduleAutoFinish();
   }
@@ -225,6 +273,77 @@
       window.botlab.markTarget(id, this.getBoundingClientRect());
       refresh();
     });
+  });
+
+  /* Task 4. Ten targets, one at a time, deliberately spread across size and
+     distance so the index of difficulty log2(2D/W) covers a wide range. The
+     page records where each one was, how wide, when it appeared and when it was
+     hit; the server works out D, the difficulty and the movement time, so a
+     stored run can be re-measured when the rules change. */
+  var FITTS_STEPS = [
+    { x: 0.10, y: 0.20, w: 92 }, { x: 0.86, y: 0.74, w: 22 },
+    { x: 0.30, y: 0.80, w: 60 }, { x: 0.92, y: 0.16, w: 16 },
+    { x: 0.18, y: 0.50, w: 116 }, { x: 0.72, y: 0.86, w: 30 },
+    { x: 0.50, y: 0.14, w: 46 }, { x: 0.08, y: 0.88, w: 20 },
+    { x: 0.94, y: 0.46, w: 34 }, { x: 0.40, y: 0.55, w: 70 }
+  ];
+
+  var arena = document.getElementById("fitts-arena");
+  var fittsTarget = document.getElementById("fitts-target");
+  var fittsStep = 0;
+  var fittsMisses = 0;
+  var fittsShownAt = null;
+
+  function placeFitts() {
+    if (fittsStep >= FITTS_STEPS.length) {
+      fittsTarget.className = "fitts-target";
+      document.getElementById("fitts-done").className = "fitts-done shown";
+      refresh();
+      return;
+    }
+    var step = FITTS_STEPS[fittsStep];
+    var box = arena.getBoundingClientRect();
+    var half = step.w / 2;
+    var left = Math.max(half, Math.min(box.width - half, step.x * box.width)) - half;
+    var top = Math.max(half, Math.min(box.height - half, step.y * box.height)) - half;
+    fittsTarget.style.width = step.w + "px";
+    fittsTarget.style.height = step.w + "px";
+    fittsTarget.style.left = Math.round(left) + "px";
+    fittsTarget.style.top = Math.round(top) + "px";
+    fittsTarget.className = "fitts-target live";
+    fittsTarget.setAttribute("aria-label",
+      "Target " + (fittsStep + 1) + " of " + FITTS_STEPS.length);
+    fittsMisses = 0;
+    fittsShownAt = window.botlab.now();
+    window.botlab.markTargetShown(fittsShownAt);
+  }
+
+  fittsTarget.addEventListener("click", function (event) {
+    if (fittsStep >= FITTS_STEPS.length) { return; }
+    var box = fittsTarget.getBoundingClientRect();
+    window.botlab.markAcquisition({
+      i: fittsStep,
+      cx: Math.round(box.left + box.width / 2),
+      cy: Math.round(box.top + box.height / 2),
+      w: Math.round(box.width),
+      shown: fittsShownAt,
+      hx: event.clientX,
+      hy: event.clientY,
+      miss: fittsMisses
+    });
+    document.getElementById("fitts-last").textContent =
+      "target " + (fittsStep + 1) + ", " + Math.round(box.width) + " px wide";
+    fittsStep += 1;
+    document.getElementById("state-fitts").textContent =
+      fittsStep + " of " + FITTS_STEPS.length;
+    placeFitts();
+  });
+
+  // A click that landed in the arena but not on the target is a miss, which is
+  // the accuracy half of the same law.
+  arena.addEventListener("click", function (event) {
+    if (event.target === fittsTarget) { return; }
+    if (fittsStep < FITTS_STEPS.length) { fittsMisses += 1; }
   });
 
   var slider = document.getElementById("slider");
@@ -311,8 +430,21 @@
   window.botlab.finish = finish;
   window.botlab.tasks = function () {
     return { typing: state.type, targets: state.clicks, drag: state.drag,
+             acquisitions: fittsStep, acquisitions_total: FITTS_STEPS.length,
              ready: required(), submitted: state.submitted };
   };
+
+  placeFitts();
+  window.addEventListener("resize", function () {
+    // Re-place rather than re-time: the server measures distance from the
+    // coordinates recorded at the moment of the hit, so a resize cannot
+    // corrupt a measurement already taken.
+    if (fittsStep < FITTS_STEPS.length) {
+      var was = fittsShownAt;
+      placeFitts();
+      fittsShownAt = was;
+    }
+  });
 
   document.getElementById("submit-run").addEventListener("click", function () { finish(); });
   document.getElementById("reset-run").addEventListener("click", function () {
