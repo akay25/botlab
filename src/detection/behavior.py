@@ -40,6 +40,10 @@ MIN_HUMAN_FLIGHT_CV = 0.15
 MIN_HUMAN_DWELL_CV = 0.12
 # Below this many presses the spread of a series means nothing.
 MIN_TIMING_SAMPLES = 5
+# A modifier is held while the next key lands, so the gap from Shift-down to
+# letter-down is near zero and says nothing about typing rhythm. Flight is
+# measured between non-modifier presses only.
+MODIFIER_KEYS = {"Shift", "Control", "Alt", "Meta", "CapsLock", "AltGraph"}
 
 # Fitts's law. The time to acquire a target grows with the index of difficulty,
 # ID = log2(2D/W), where D is the distance the hand travels and W the width of
@@ -310,7 +314,8 @@ def _analyse_keys(events, duration_ms):
             record = pending[code].pop(0)
             record["dwell"] = float(event.get("t", 0)) - record["t"]
 
-    for previous, current in zip(presses, presses[1:]):
+    typing = [r for r in presses if r["key"] not in MODIFIER_KEYS]
+    for previous, current in zip(typing, typing[1:]):
         current["flight"] = current["t"] - previous["t"]
 
     dwells = [r["dwell"] for r in presses if r["dwell"] is not None]
