@@ -200,12 +200,18 @@
     /* Report the adapter, and whether the unmasked names were readable. A
        masked renderer says "WebKit WebGL" whatever the machine has, so the
        server must know not to read it as evidence either way. */
-    var out = { vendor: "", renderer: "", unmasked: false, supported: false };
+    var out = { vendor: "", renderer: "", version: "", glsl_version: "",
+                unmasked: false, supported: false };
     try {
       var canvas = document.createElement("canvas");
       var gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
       if (!gl) { return out; }
       out.supported = true;
+      /* The driver's own version strings. They are never masked, and they name
+         the ANGLE build behind the adapter, which is part of what a profile has
+         to reproduce for the fingerprint to match. */
+      out.version = String(gl.getParameter(gl.VERSION) || "");
+      out.glsl_version = String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION) || "");
       var info = gl.getExtension("WEBGL_debug_renderer_info");
       if (info) {
         out.unmasked = true;
@@ -398,7 +404,7 @@
        the labels stay blank until then. */
     var EMPTY = {
       media_device_count: null, media_device_kinds: "",
-      media_devices: null, media_devices_labelled: null
+      media_devices: null, media_device_list: null, media_devices_labelled: null
     };
     if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
       return Promise.resolve(EMPTY);
@@ -406,13 +412,26 @@
     return withTimeout(navigator.mediaDevices.enumerateDevices().then(function (list) {
       var kinds = {};
       var labelled = 0;
+      var devices = [];
       list.forEach(function (d) {
         kinds[d.kind] = (kinds[d.kind] || 0) + 1;
         if (d.label) { labelled += 1; }
+        /* Keep each device as well as the count. The counts are what the
+           detector scores; the individual ids and labels are what a profile
+           needs to reproduce the same device list somewhere else. Both are
+           blank until the user grants permission, which is itself worth
+           recording rather than hiding. */
+        devices.push({
+          kind: d.kind || "",
+          deviceId: d.deviceId || "",
+          label: d.label || "",
+          groupId: d.groupId || ""
+        });
       });
       return {
         media_device_count: list.length,
         media_devices: kinds,
+        media_device_list: devices,
         media_devices_labelled: labelled,
         media_device_kinds: Object.keys(kinds).map(function (k) {
           return k + ":" + kinds[k];
@@ -584,6 +603,66 @@
     }, function () { return out; });
   }
 
+  function probeWebgpu() {
+    /* The adapter behind WebGPU, which names the same silicon WebGL reports
+       but through a different API. Nothing here is scored yet; it is collected
+       because a profile that reproduces the WebGL adapter and not this one is
+       inconsistent in a way a site can read. */
+    var out = { supported: false, vendor: "", architecture: "", device: "",
+                description: "", adapter: false };
+    if (!navigator.gpu || typeof navigator.gpu.requestAdapter !== "function") {
+      return Promise.resolve(out);
+    }
+    out.supported = true;
+    var attempt;
+    try {
+      attempt = navigator.gpu.requestAdapter().then(function (adapter) {
+        if (!adapter) { return out; }
+        out.adapter = true;
+        var info = adapter.info || {};
+        out.vendor = String(info.vendor || "");
+        out.architecture = String(info.architecture || "");
+        out.device = String(info.device || "");
+        out.description = String(info.description || "");
+        return out;
+      }, function () { return out; });
+    } catch (err) { return Promise.resolve(out); }
+    return withTimeout(attempt, 1200, out);
+  }
+
+  function probeUserAgentData() {
+    /* The high-entropy client hints. The User-Agent string of a current
+       Chromium is frozen — "Mac OS X 10_15_7" whatever the machine runs — so
+       the real platform version only exists here. */
+    var out = {
+      ua_data_supported: false, ua_platform: "", ua_platform_version: "",
+      ua_architecture: "", ua_bitness: "", ua_model: "", ua_full_version: "",
+      ua_mobile: null
+    };
+    var data = navigator.userAgentData;
+    if (!data || typeof data.getHighEntropyValues !== "function") {
+      return Promise.resolve(out);
+    }
+    out.ua_data_supported = true;
+    out.ua_platform = String(data.platform || "");
+    out.ua_mobile = data.mobile === true;
+    var wanted = ["platformVersion", "architecture", "bitness", "model",
+                  "uaFullVersion"];
+    var attempt;
+    try {
+      attempt = data.getHighEntropyValues(wanted).then(function (hints) {
+        out.ua_platform = String(hints.platform || out.ua_platform);
+        out.ua_platform_version = String(hints.platformVersion || "");
+        out.ua_architecture = String(hints.architecture || "");
+        out.ua_bitness = String(hints.bitness || "");
+        out.ua_model = String(hints.model || "");
+        out.ua_full_version = String(hints.uaFullVersion || "");
+        return out;
+      }, function () { return out; });
+    } catch (err) { return Promise.resolve(out); }
+    return withTimeout(attempt, 900, out);
+  }
+
   function probeStorage() {
     if (!navigator.storage || !navigator.storage.estimate) {
       return Promise.resolve({ storage_quota: null });
@@ -618,10 +697,12 @@
     if (slowProbes) { return slowProbes; }
     slowProbes = Promise.all([
       measureFrames(700), probeMediaDevices(), probeVoices(),
-      probeIce(), probePermissions(), probeStorage(), probeDrm()
+      probeIce(), probePermissions(), probeStorage(), probeDrm(),
+      probeWebgpu(), probeUserAgentData()
     ]).then(function (parts) {
       var permissions = parts[4];
       return {
+        ua_data: parts[8],
         runtime: {
           frame_count: parts[0].frame_count,
           frame_mean_ms: parts[0].frame_mean_ms,
@@ -631,6 +712,7 @@
         environment: Object.assign({}, parts[1], parts[2], parts[3],
           { permissions: permissions.permissions }, parts[5], {
             drm: parts[6],
+            webgpu: parts[7],
             codecs: probeCodecs(),
             pdf_viewer_enabled: navigator.pdfViewerEnabled === true,
             battery_api: typeof navigator.getBattery === "function",
@@ -649,15 +731,18 @@
     startSlowProbes();
   }
 
-  function buildFingerprint(mismatch) {
+  function buildFingerprint(mismatch, uaData) {
     var gl = readWebgl();
     var fonts = probeFonts();
+    var hints = uaData || {};
     return {
       webdriver: navigator.webdriver === true,
       automation_keys: findAutomationKeys(),
       patched_natives: findPatchedNatives(),
       webgl_vendor: gl.vendor,
       webgl_renderer: gl.renderer,
+      webgl_version: gl.version,
+      webgl_glsl_version: gl.glsl_version,
       webgl_unmasked: gl.unmasked,
       webgl_supported: gl.supported,
       canvas_hash: canvasHash(),
@@ -683,7 +768,15 @@
       outer_height: window.outerHeight,
       timezone: (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone || "",
       timezone_offset: new Date().getTimezoneOffset(),
-      user_agent: navigator.userAgent
+      user_agent: navigator.userAgent,
+      ua_data_supported: hints.ua_data_supported === true,
+      ua_platform: hints.ua_platform || "",
+      ua_platform_version: hints.ua_platform_version || "",
+      ua_architecture: hints.ua_architecture || "",
+      ua_bitness: hints.ua_bitness || "",
+      ua_model: hints.ua_model || "",
+      ua_full_version: hints.ua_full_version || "",
+      ua_mobile: typeof hints.ua_mobile === "boolean" ? hints.ua_mobile : null
     };
   }
 
@@ -698,7 +791,7 @@
         source: "page",
         reason: "tasks",
         page_url: location.href,
-        js: buildFingerprint(slow.permission_mismatch),
+        js: buildFingerprint(slow.permission_mismatch, slow.ua_data),
         runtime: Object.assign({}, earlyRuntime, slow.runtime),
         environment: slow.environment,
         behavior: telemetry

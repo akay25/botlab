@@ -1,9 +1,10 @@
 import csv
 import io
 
-from fastapi import APIRouter
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import JSONResponse, PlainTextResponse
 
+from src import profile as profile_service
 from src.constants import CSV_COLUMNS, LAYERS
 from src.loaders import storage
 from src.loaders.logging import get_logger
@@ -45,6 +46,29 @@ def _row(record):
     for layer in LAYERS:
         row["w_" + layer] = (layers.get(layer) or {}).get("weight", 0)
     return row
+
+
+@router.get("/profile/{session_id}.json")
+async def export_profile(session_id: str, name: str = "",
+                         voice_type: str = profile_service.DEFAULT_VOICE_TYPE):
+    """Return one run as a bare replay profile, ready to hand to another program.
+
+    Bare on purpose: no envelope, no notes, nothing a consumer has to unwrap.
+    `curl .../api/export/profile/<id>.json > profile.json` writes a file that
+    is already the input format.
+
+    /api/sessions/{id}/profile returns the same document with the list of
+    fields no measurement backed, which is the one worth reading first.
+    """
+    record = storage.find(session_id)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No session has that id.")
+    built = profile_service.build(record, name=name or None, voice_type=voice_type)
+    return JSONResponse(built, headers={
+        "Content-Disposition": 'attachment; filename="botlab-profile-%s.json"'
+                               % built["name"],
+    })
 
 
 @router.get(".csv", response_class=PlainTextResponse)

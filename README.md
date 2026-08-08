@@ -70,6 +70,7 @@ Each prints the score and a report URL. Open the URL for the evidence, or open
 | `pipenv run human` | `examples/playwright_human.py` |
 | `pipenv run matrix` | `tools/client_matrix.py` |
 | `pipenv run calibrate` | `tools/calibrate.py` |
+| `pipenv run to-profile` | `tools/to_profile.py` |
 
 ## Driving the page
 
@@ -461,6 +462,7 @@ src/
 ├── main.py                FastAPI app: CORS, redirect, exception handlers
 ├── __main__.py            entry point; starts uvicorn and the TLS front end
 ├── constants.py           layer order, score bands, CSV columns
+├── profile.py             a scored run rewritten as a replay profile
 ├── loaders/
 │   ├── config.py          pydantic-settings, reads .env
 │   ├── logging.py         JSON logger
@@ -478,7 +480,7 @@ src/
 │   ├── pages.py           /, /dashboard, /report/{id}, /collector.js
 │   ├── collect.py         POST /api/collect
 │   ├── sessions.py        /api/sessions, /api/sessions/{id}, /api/probe
-│   └── exports.py         /api/export.csv
+│   └── exports.py         /api/export.csv, /api/export/profile/{id}.json
 ├── types/
 │   ├── input/collect.py   the report payload
 │   └── response/detection.py  score, layers, signals, session summary
@@ -486,7 +488,7 @@ src/
 └── static/                task page, collector, report viewer, dashboard
 
 examples/                  runnable Playwright and Selenium clients
-tools/                     calibrate.py, client_matrix.py
+tools/                     calibrate.py, client_matrix.py, to_profile.py
 data/                      run log, certificate, calibration table
 ```
 
@@ -507,8 +509,10 @@ Interactive docs at `/docs`. Every reply is wrapped as
 | `POST` | `/api/collect` | Score a report from the task page |
 | `GET` | `/api/sessions` | The most recent scored sessions |
 | `GET` | `/api/sessions/{id}` | One run, with raw telemetry and probe output |
+| `GET` | `/api/sessions/{id}/profile` | The run as a replay profile, with its gaps listed |
 | `GET` | `/api/probe` | Score the caller itself, for non-browser clients |
 | `GET` | `/api/export.csv` | Every logged session as CSV |
+| `GET` | `/api/export/profile/{id}.json` | The same profile, bare, for another program |
 | `GET` | `/api/health` | Liveness |
 
 ## Export
@@ -516,10 +520,57 @@ Interactive docs at `/docs`. Every reply is wrapped as
 | Source | Holds |
 |---|---|
 | Report page, **Download JSON** | The whole record, including the raw event stream |
+| Report page, **Download profile** | The run as a replay profile, plus the list of fields it had to guess |
 | `https://host:port/api/export.csv` | Every logged session, one row per run |
+| `https://host:port/api/export/profile/{id}.json` | One replay profile, bare |
 
 The CSV carries the per-layer weights and the detection IDs, not only the
 score, because a score is one number a reader cannot check.
+
+### Replay profiles
+
+A run says what a client looked like. A profile says what to make another
+client look like: the same adapter strings, screen, device list and locale, in
+the shape a launcher takes as input.
+
+```json
+{
+  "name": "mac-m4",
+  "os": "mac",
+  "screen_resolution": "1920x1080",
+  "timezone": "UTC",
+  "lang": "en-US",
+  "browser": {
+    "ua": "Mozilla/5.0 (Macintosh; …) Chrome/153.0.0.0 Safari/537.36",
+    "platform": "MacIntel",
+    "ua_platform_version": "15.0.0",
+    "hardware_concurrency": 10,
+    "webgl": { "vendor": "…", "renderer": "…", "version": "…", "glsl_version": "…" },
+    "webgpu": { "vendor": "…", "architecture": "apple" },
+    "media_devices": { "audioinput": [ … ], "videoinput": [ … ], "audiooutput": [ … ] }
+  },
+  "audio": { "sink_desc": "MacBook Speakers", "mic_desc": "MacBook Microphone" },
+  "speech": { "lang": "en-US", "voice_type": "MALE1", "trim": true }
+}
+```
+
+Convert a file you already downloaded, without the harness running:
+
+```bash
+python3 tools/to_profile.py ~/Downloads/botlab-<label>.json --name mac-m4
+python3 tools/to_profile.py data/sessions.jsonl -o profiles/   # the whole log
+```
+
+Two rules hold in `src/profile.py`. Nothing is invented where the run measured
+something, even when the value looks wrong — a profile that tidies up what it
+saw no longer reproduces it. Where the run measured nothing, the gap is filled
+with a plain platform default and **named**, on stderr or beside the download
+button, because the file itself prints a guess and a measurement identically.
+
+Two fields are always defaults: `speech.voice_type` and `speech.trim` are
+settings for whatever plays the audio, not properties of a client, so no run
+can measure them. Device labels are usually defaults too — `enumerateDevices`
+blanks every label until the page is granted microphone or camera access.
 
 ## Scope
 

@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Request, Response, status
 
+from src import profile as profile_service
 from src.detection import session as session_service
 from src.loaders import storage
 from src.loaders.config import config
@@ -35,6 +36,32 @@ async def get_session(session_id: str, response: Response):
             status_code=status.HTTP_404_NOT_FOUND,
         )
     return make_response(response, data=record)
+
+
+@router.get("/{session_id}/profile")
+async def get_profile(session_id: str, response: Response, name: str = "",
+                      voice_type: str = profile_service.DEFAULT_VOICE_TYPE):
+    """Return the run rewritten as a replay profile, with its gaps listed.
+
+    The profile is the run pointed the other way: what another client would
+    have to report to look like this one. `gaps` names every field no
+    measurement backed, because the profile itself cannot show which of its
+    values were read and which were filled in.
+
+    /api/export/profile/{id}.json returns the same profile as a bare file for
+    a program to consume.
+    """
+    record = storage.find(session_id)
+    if record is None:
+        return make_response(
+            response,
+            success=False,
+            message="No session has that id.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    built, gaps = profile_service.describe(record, name=name or None,
+                                           voice_type=voice_type)
+    return make_response(response, data={"profile": built, "gaps": gaps})
 
 
 probe_router = APIRouter(

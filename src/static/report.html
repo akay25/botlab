@@ -811,23 +811,68 @@
     var exports = el("div", "btns");
     var jsonButton = el("button", null, "Download JSON");
     jsonButton.addEventListener("click", function () {
-      var blob = new Blob([JSON.stringify(record, null, 2)], { type: "application/json" });
-      var url = URL.createObjectURL(blob);
-      var link = document.createElement("a");
-      link.href = url;
-      link.download = "botlab-" + (record.label || record.id) + ".json";
-      link.click();
-      setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+      save(JSON.stringify(record, null, 2),
+           "botlab-" + (record.label || record.id) + ".json");
     });
+    var profileButton = el("button", "ghost", "Download profile");
     var printButton = el("button", "ghost", "Print");
     printButton.addEventListener("click", function () { window.print(); });
     exports.appendChild(jsonButton);
+    exports.appendChild(profileButton);
     exports.appendChild(printButton);
     var exportSection = section("Export", exports,
       "The JSON holds the whole record, including the raw event stream this report was " +
-      "derived from.");
+      "derived from. The profile is the same run pointed the other way: the fields another " +
+      "client would have to report to look like this one, in the shape a launcher takes.");
     exportSection.className = "noprint";
     host.appendChild(exportSection);
+
+    profileButton.addEventListener("click", function () {
+      profileButton.disabled = true;
+      fetch("/api/sessions/" + encodeURIComponent(record.id) + "/profile")
+        .then(function (r) { return r.json(); })
+        .then(function (envelope) {
+          var built = (envelope.data || {}).profile;
+          if (!built) { throw new Error("no profile"); }
+          save(JSON.stringify(built, null, 2),
+               "botlab-profile-" + built.name + ".json");
+          showGaps(exportSection, (envelope.data || {}).gaps || []);
+        })
+        .catch(function () {
+          showGaps(exportSection, ["The profile could not be built. The harness may be " +
+                                   "running an older build than this page."]);
+        })
+        .then(function () { profileButton.disabled = false; });
+    });
+  }
+
+  function save(text, filename) {
+    var blob = new Blob([text], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+
+  /* Say which profile fields no measurement backed. The file itself cannot
+     show it: every field prints the same way whether it was read off the
+     client or filled in from a platform default, and a reader who cannot tell
+     them apart will reproduce a guess believing it was measured. */
+  function showGaps(host, gaps) {
+    var old = host.querySelector(".gaps");
+    if (old) { host.removeChild(old); }
+    var box = el("div", "gaps");
+    box.appendChild(el("p", "hint", gaps.length
+      ? "Fields in that profile which no measurement backed:"
+      : "Every field in that profile came from this run."));
+    if (gaps.length) {
+      var list = el("ul", "sig");
+      gaps.forEach(function (gap) { list.appendChild(el("li", null, gap)); });
+      box.appendChild(list);
+    }
+    host.appendChild(box);
   }
 
   var id = location.pathname.replace(/\/+$/, "").split("/").pop();
